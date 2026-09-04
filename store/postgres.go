@@ -145,14 +145,17 @@ func (p *Postgres) Insert(ctx context.Context, in InsertInput) (string, error) {
 // ReplaceContainerBlob hard-replaces a container's bytes in place (keep-latest)
 // via document.replace_container_blob, under the optimistic CAS.
 func (p *Postgres) ReplaceContainerBlob(ctx context.Context, in ReplaceInput) (*Document, *PurgedRef, error) {
-	data, err := p.call(ctx, "document.replace_container_blob", map[string]any{
+	body := map[string]any{
 		"id":                 in.ID,
 		"expected_hash":      in.ExpectedHash,
 		"storage_ref":        in.StorageRef,
 		"content_hash":       in.ContentHash,
 		"size":               in.Size,
 		"encryption_key_ref": in.EncryptionKeyRef,
-	})
+	}
+	putOpt(body, "preservation_class", in.PreservationClass)
+
+	data, err := p.call(ctx, "document.replace_container_blob", body)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -451,14 +454,6 @@ func (p *Postgres) DeleteHistoryChain(ctx context.Context, owner, chainRootID st
 // SetStatus changes an owned document's status via document.set_status.
 func (p *Postgres) SetStatus(ctx context.Context, id, caller, status string) error {
 	_, err := p.call(ctx, "document.set_status", map[string]any{"id": id, "caller": caller, "status": status})
-
-	return err
-}
-
-// SetPreservationClass sets the B4 class via document.set_preservation_class.
-func (p *Postgres) SetPreservationClass(ctx context.Context, id, caller, class string) error {
-	_, err := p.call(ctx, "document.set_preservation_class",
-		map[string]any{"id": id, "caller": caller, "preservation_class": class})
 
 	return err
 }

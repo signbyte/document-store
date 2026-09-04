@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -159,6 +160,14 @@ func (m *Memory) ReplaceContainerBlob(_ context.Context, in ReplaceInput) (*Docu
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Mirrors the procedure's input check: a preservation class, when given,
+	// is one of the closed set — refused before anything is touched.
+	switch in.PreservationClass {
+	case "", "none", "b_lt", "preservation":
+	default:
+		return nil, nil, fmt.Errorf("document: invalid preservation class %q", in.PreservationClass)
+	}
+
 	// Only a signed head form (container or signed PDF) may be replaced in
 	// place — a merged co-signature or an archive-timestamped refresh. A plain
 	// source is never replaced.
@@ -180,6 +189,11 @@ func (m *Memory) ReplaceContainerBlob(_ context.Context, in ReplaceInput) (*Docu
 	// The platform applied this signature in place — lets a root-headed chain
 	// (a bundle, or an uploaded file co-signed here) read as signed-here.
 	d.SignedAt = &now
+	// The fact rides with the bytes: an archive-timestamped refresh records its
+	// class in the same write as the swap.
+	if in.PreservationClass != "" {
+		d.PreservationClass = in.PreservationClass
+	}
 	d.UpdatedAt = now
 
 	return clone(d), old, nil
@@ -829,21 +843,6 @@ func (m *Memory) ChainRetention(_ context.Context, id string) (time.Time, int, e
 	}
 
 	return until, live, nil
-}
-
-// SetPreservationClass sets an owned document's preservation class.
-func (m *Memory) SetPreservationClass(_ context.Context, id, caller, class string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	d, ok := m.rows[id]
-	if !ok || d.Owner != caller {
-		return ErrNotFound
-	}
-	d.PreservationClass = class
-	d.UpdatedAt = time.Now().UTC()
-
-	return nil
 }
 
 // ExtendRetention rolls retention_until forward (never shortens).
