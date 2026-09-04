@@ -390,6 +390,23 @@ func (s *Service) Rebundle(ctx context.Context, owner, id string, entries []Bund
 // one container. The new blob is rolled back if the swap fails. Returns the
 // updated row.
 func (s *Service) ReplaceContainer(ctx context.Context, containerID, expectedHash string, newBytes []byte) (*store.Document, error) {
+	return s.replaceContainer(ctx, containerID, expectedHash, newBytes, "")
+}
+
+// ReplaceContainerArchived is ReplaceContainer for the archive-timestamped form
+// of a signed head (B-LT → B-LTA): the same swap, and in the same database write
+// the row is upgraded to long-term preservation. The bytes and the fact commit
+// together — a refused fact leaves the document untouched, and a swapped
+// document is always recorded as archive-timestamped. Authority is the caller's:
+// whoever may read the head may have its archive timestamp added.
+func (s *Service) ReplaceContainerArchived(ctx context.Context, containerID, expectedHash string, archived []byte) (*store.Document, error) {
+	return s.replaceContainer(ctx, containerID, expectedHash, archived, "preservation")
+}
+
+// replaceContainer is the shared body: encrypt + store, CAS-swap the row (with
+// an optional preservation class recorded in the same write), destroy the prior
+// blob.
+func (s *Service) replaceContainer(ctx context.Context, containerID, expectedHash string, newBytes []byte, preservationClass string) (*store.Document, error) {
 	hash := CanonicalHash(newBytes)
 
 	plainKey, wrapped, err := s.kms.GenerateDataKey()
@@ -407,12 +424,13 @@ func (s *Service) ReplaceContainer(ctx context.Context, containerID, expectedHas
 	}
 
 	doc, old, err := s.store.ReplaceContainerBlob(ctx, store.ReplaceInput{
-		ID:               containerID,
-		ExpectedHash:     expectedHash,
-		StorageRef:       objKey,
-		ContentHash:      hash,
-		Size:             int64(len(newBytes)),
-		EncryptionKeyRef: base64.StdEncoding.EncodeToString(wrapped),
+		ID:                containerID,
+		ExpectedHash:      expectedHash,
+		StorageRef:        objKey,
+		ContentHash:       hash,
+		Size:              int64(len(newBytes)),
+		EncryptionKeyRef:  base64.StdEncoding.EncodeToString(wrapped),
+		PreservationClass: preservationClass,
 	})
 	if err != nil {
 		// Roll back the orphan new blob (a CAS rejection leaves nothing behind).
@@ -530,11 +548,6 @@ func (s *Service) Content(ctx context.Context, id string, caller store.Caller) (
 // (rolling-extension-on-co-sign).
 func (s *Service) ExtendRetention(ctx context.Context, id, owner string) error {
 	return s.store.ExtendRetention(ctx, id, owner, time.Now().Add(s.ttl))
-}
-
-// SetPreservationClass sets/upgrades the B4 class on an owned document.
-func (s *Service) SetPreservationClass(ctx context.Context, id, owner, class string) error {
-	return s.store.SetPreservationClass(ctx, id, owner, class)
 }
 
 // SetResultFreeze sets/clears the chain-level download freeze (resolved to the
