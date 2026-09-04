@@ -1315,18 +1315,17 @@ func (r *router) storeArchived(ctx *azugo.Context) {
 		return
 	}
 
-	doc, err := r.Documents().ReplaceContainer(ctx, head.ID, head.ContentHash, data)
+	// The swap and the fact are one write. An archive timestamp upgrades the
+	// document to long-term preservation (B-LTA); that class is recorded in the
+	// same transaction as the new bytes, so a refused fact leaves the document
+	// untouched and a swapped document is always recorded as archive-timestamped.
+	// Without the fact the only trace is the swapped bytes — indistinguishable
+	// from an ordinary co-sign replace — and the activity trail could not show
+	// the timestamp after a reload. Whoever the access list lets read the head may
+	// add the archive timestamp: a co-signer holds the same document as the
+	// uploader.
+	doc, err := r.Documents().ReplaceContainerArchived(ctx, head.ID, head.ContentHash, data)
 	if err != nil {
-		r.writeStoreErr(ctx, err)
-
-		return
-	}
-
-	// Record the archive as a durable fact: an archive timestamp upgrades the
-	// container to long-term preservation (B-LTA). Without this the only trace is
-	// the swapped bytes — indistinguishable from an ordinary co-sign replace — so
-	// the owner-facing activity trail cannot show "archived" after a reload.
-	if err := r.Documents().SetPreservationClass(ctx, doc.ID, reqCaller(ctx).Sub, "preservation"); err != nil {
 		r.writeStoreErr(ctx, err)
 
 		return

@@ -202,6 +202,11 @@ type ReplaceInput struct {
 	ContentHash      string
 	Size             int64
 	EncryptionKeyRef string
+	// PreservationClass, when set, is recorded in the same write as the swap: an
+	// archive-timestamped refresh upgrades the row to "preservation" as one fact
+	// with its bytes, never as a second step that can fail on its own. Empty
+	// leaves the row's class unchanged.
+	PreservationClass string
 }
 
 // Bundleable reports whether a document may be absorbed into a bundle: an unsigned
@@ -259,6 +264,7 @@ type Store interface {
 	// ReplaceContainerBlob hard-replaces a container's bytes in place (keep-latest)
 	// under an optimistic CAS on its current content hash, returning the updated
 	// row + the PRIOR blob refs to destroy. ErrChainAdvanced when the hash moved.
+	// A PreservationClass in the input is recorded in the same write.
 	ReplaceContainerBlob(ctx context.Context, in ReplaceInput) (*Document, *PurgedRef, error)
 	// Bundle inserts ONE unsigned container row (a fresh chain root) built from
 	// the owner's loose sources and absorbs those source rows + their ACL
@@ -311,8 +317,6 @@ type Store interface {
 	GetChain(ctx context.Context, caller Caller, id string) (*Chain, error)
 	// SetStatus atomically changes an owned document's status.
 	SetStatus(ctx context.Context, id, caller, status string) error
-	// SetPreservationClass sets/upgrades an owned document's preservation class.
-	SetPreservationClass(ctx context.Context, id, caller, class string) error
 	// SetResultFreeze sets/clears the chain-level download freeze (resolved to
 	// the chain root from any of its rows). The caller's authority is the
 	// service boundary's job (the grant scope) — the store just records it.
