@@ -6,7 +6,7 @@ require (
 	azugo.io/azugo v0.38.1
 	azugo.io/core v0.38.1
 	github.com/gmb-lib/go-asice v1.6.1
-	github.com/gmb-lib/go-authbyte v0.21.0
+	github.com/gmb-lib/go-authbyte v0.22.0
 	github.com/gmb-lib/go-docgate v1.0.3
 	github.com/gmb-lib/go-gdpr-audit v1.1.4
 	github.com/gmb-lib/go-platform-kit v1.11.2
