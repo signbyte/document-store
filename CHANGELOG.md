@@ -5,6 +5,29 @@ runs the service or integrates against it.
 
 ## v0.1.2
 
+### Changed — a chain grant is stored in one canonical spelling of the identity code
+
+`POST /api/v1/documents/{id}/acl` now rewrites the `serial` it is given to one spelling before
+storing it: the identity type, the country, a hyphen, and the national code with its separators
+removed. A co-signer's own identity code is reduced the same way before it is matched. So a grant
+written `PNOLV-010180-15097` is matched by a co-signer whose token carries `PNOLV-01018015097`, and
+the other way round — which they previously were not.
+
+```http
+POST /api/v1/documents/{id}/acl
+Content-Type: application/json
+
+{ "serial": "PNOLV-010180-15097", "rights": ["read", "cosign"] }
+```
+
+The entry is stored against `PNOLV-01018015097`. The country stays part of the key, so the same
+eleven digits in another country belong to another person and match nothing.
+
+**A `serial` that names no country is now refused** — `422 err:document:invalidSerial`, repeating no
+identity code back. The workflow service that calls this route has already resolved a country from
+the person it invited, so a bare code arriving here means that resolution did not happen: it is a
+fault to name, not a nationality to invent.
+
 ### Changed — the metrics endpoint no longer offers OpenMetrics
 
 A scraper that asked for the OpenMetrics format by sending `Accept: application/openmetrics-text`

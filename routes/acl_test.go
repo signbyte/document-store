@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/go-quicktest/qt"
@@ -107,4 +108,70 @@ func TestGrantACLValidation(t *testing.T) {
 	badRight := grantHeaders(`{"serial":"PNOLV-1","rights":["delete"]}`, "/api/v1/documents/"+id+"/acl")
 	qt.Check(t, qt.Equals(badRight.StatusCode(), fasthttp.StatusUnprocessableEntity))
 	fasthttp.ReleaseResponse(badRight)
+}
+
+// The grant is STORED in the one spelling this platform compares, so a co-signer
+// whose token carries a different spelling of the same code still reaches the
+// chain — and one carrying the same digits in another country does not.
+func TestGrantACLMatchesAcrossSpellingsAndNotAcrossCountries(t *testing.T) {
+	app := testApp(t)
+	app.Start(t)
+	defer app.Stop()
+	tc := app.TestClient()
+
+	id := ingestDoc(t, app, "owner-1", "deal.txt", []byte("co-sign me")).ID
+
+	// Granted the way a certificate writes it.
+	gr, err := tc.Post("/api/v1/documents/"+id+"/acl",
+		[]byte(`{"serial":"`+testSerial(123456, 78900)+`"}`),
+		tc.WithHeader("Content-Type", "application/json"),
+		tc.WithHeader("X-Test-Scopes", scopeGrant),
+		tc.WithHeader("X-Test-Sub", "svc:envelope"))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Assert(t, qt.Equals(gr.StatusCode(), fasthttp.StatusNoContent))
+	fasthttp.ReleaseResponse(gr)
+
+	// Arriving in the stored spelling: the same person, so the same chain.
+	got, err := tc.Get("/api/v1/documents/"+id,
+		tc.WithHeader("X-Test-Scopes", scopeRead),
+		tc.WithHeader("X-Test-Sub", "cosigner-x"),
+		tc.WithHeader("X-Test-Serial", testSerialStored(123456, 78900)))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Check(t, qt.Equals(got.StatusCode(), fasthttp.StatusOK))
+	fasthttp.ReleaseResponse(got)
+
+	// The same digits in another country are another person, and see nothing.
+	foreign, err := tc.Get("/api/v1/documents/"+id,
+		tc.WithHeader("X-Test-Scopes", scopeRead),
+		tc.WithHeader("X-Test-Sub", "cosigner-z"),
+		tc.WithHeader("X-Test-Serial", "PNOLT-12345678900"))
+	qt.Assert(t, qt.IsNil(err))
+	qt.Check(t, qt.Equals(foreign.StatusCode(), fasthttp.StatusNotFound))
+	fasthttp.ReleaseResponse(foreign)
+}
+
+// A grant naming a code with no country is refused. The workflow service that calls
+// this has already resolved one from the person it invited, so a bare code here
+// means that did not happen — a fault to name, not a nationality to invent.
+func TestGrantACLRefusesACodeWithNoCountry(t *testing.T) {
+	app := testApp(t)
+	app.Start(t)
+	defer app.Stop()
+	tc := app.TestClient()
+
+	id := ingestDoc(t, app, "owner-1", "deal.txt", []byte("co-sign me")).ID
+
+	bare := "12345678900"
+	resp, err := tc.Post("/api/v1/documents/"+id+"/acl", []byte(`{"serial":"`+bare+`"}`),
+		tc.WithHeader("Content-Type", "application/json"),
+		tc.WithHeader("X-Test-Scopes", scopeGrant),
+		tc.WithHeader("X-Test-Sub", "svc:envelope"))
+	qt.Assert(t, qt.IsNil(err))
+	body := string(resp.Body())
+	qt.Check(t, qt.Equals(resp.StatusCode(), fasthttp.StatusUnprocessableEntity))
+	fasthttp.ReleaseResponse(resp)
+
+	qt.Check(t, qt.IsTrue(strings.Contains(body, "err:document:invalidSerial")))
+	// The refusal repeats no identity code: it is personal data.
+	qt.Check(t, qt.IsFalse(strings.Contains(body, bare)))
 }

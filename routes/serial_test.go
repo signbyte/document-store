@@ -5,13 +5,22 @@ import (
 	"strings"
 )
 
-// testSerial returns an eID national identifier in the PNO form this service
-// stores: the country code, a six-digit date-of-birth part and a five-digit
-// serial, assembled from those parts at run time rather than written as a
-// literal. An identifier-shaped constant in source is indistinguishable from a
-// credential to a secret scanner, and from a real person's code to a reader.
+// testSerial returns an eID national identifier the way a Latvian certificate and
+// a Latvian person write it — the country code, a six-digit leading group and a
+// five-digit serial. It is deliberately NOT the spelling this service stores: the
+// grant route reduces it, and the tests below exist to hold it to that.
+//
+// Assembled from its parts at run time rather than written as a literal: an
+// identifier-shaped constant in source is indistinguishable from a credential to a
+// secret scanner, and from a real person's code to a reader.
 func testSerial(birth, serial int) string {
 	return fmt.Sprintf("PNOLV-%06d-%05d", birth, serial)
+}
+
+// testSerialStored is the same person in the one spelling this service stores and
+// compares: the separators gone.
+func testSerialStored(birth, serial int) string {
+	return fmt.Sprintf("PNOLV-%06d%05d", birth, serial)
 }
 
 var (
