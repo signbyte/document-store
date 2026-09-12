@@ -8,6 +8,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 
+	"github.com/gmb-lib/go-authbyte/identitycode"
 	pkerrors "github.com/gmb-lib/go-platform-kit/errors"
 
 	documentstore "github.com/signbyte/document-store"
@@ -99,7 +100,17 @@ func callerID(ctx *azugo.Context) string { return ctx.User().ID() }
 // subject plus the eIDAS serial claim (present on a named person's token, and
 // carried through on-behalf delegation — so a co-signer matches an invited slot).
 func reqCaller(ctx *azugo.Context) store.Caller {
-	return store.Caller{Sub: ctx.User().ID(), Serial: ctx.User().ClaimValue("serial_number")}
+	// The serial is reduced to the one spelling this platform compares before it is
+	// matched against a chain grant. The claim is already canonical when it comes
+	// from this platform's own identity service; reducing it again costs nothing and
+	// covers the case that matters — a co-signer who is on the chain and is told the
+	// document does not exist, which is what a miss looks like from outside.
+	serial := ctx.User().ClaimValue("serial_number")
+	if serial != "" {
+		serial = identitycode.Key(serial)
+	}
+
+	return store.Caller{Sub: ctx.User().ID(), Serial: serial}
 }
 
 // writeStoreErr maps store/domain errors to the right HTTP status.

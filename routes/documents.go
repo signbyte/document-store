@@ -12,6 +12,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 
+	"github.com/gmb-lib/go-authbyte/identitycode"
 	docgate "github.com/gmb-lib/go-docgate"
 	pkerrors "github.com/gmb-lib/go-platform-kit/errors"
 	pkweb "github.com/gmb-lib/go-platform-kit/web"
@@ -467,6 +468,24 @@ func (r *router) grantACL(ctx *azugo.Context) {
 
 		return
 	}
+	// The grant is matched later against the identity code in a co-signer's own
+	// token, so it is stored in the one spelling this platform compares. The two
+	// are written by different services, and a grant nobody's login can match is
+	// an invitation to a document that cannot be opened.
+	//
+	// No country is supplied and none is guessed: the workflow service that calls
+	// this has already resolved one from the person it invited, so a code arriving
+	// bare here means that resolution did not happen — which is a fault to name,
+	// not a nationality to invent. The refusal repeats no code: it is personal data.
+	canonical, err := identitycode.Canonical(serial, "")
+	if err != nil {
+		ctx.Error(pkerrors.NewProblem("err:document:invalidSerial",
+			pkerrors.WithStatus(fasthttp.StatusUnprocessableEntity),
+			pkerrors.WithDetail("serial must be a fully qualified identity code, e.g. PNO<CC>-<code>")))
+
+		return
+	}
+	serial = canonical
 	for _, right := range req.Rights {
 		if right != "read" && right != "cosign" {
 			ctx.Error(pkerrors.NewProblem("err:document:invalidRight",

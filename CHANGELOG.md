@@ -3,6 +3,75 @@
 Notable changes to this service, newest first, per release. This file is written for whoever
 runs the service or integrates against it.
 
+## v0.1.2
+
+### Changed — a chain grant is stored in one canonical spelling of the identity code
+
+`POST /api/v1/documents/{id}/acl` now rewrites the `serial` it is given to one spelling before
+storing it: the identity type, the country, a hyphen, and the national code with its separators
+removed. A co-signer's own identity code is reduced the same way before it is matched. So a grant
+written `PNOLV-XXXXXX-XXXXX` is matched by a co-signer whose token carries `PNOLV-XXXXXXXXXXX`, and
+the other way round — which they previously were not.
+
+```http
+POST /api/v1/documents/{id}/acl
+Content-Type: application/json
+
+{ "serial": "PNOLV-XXXXXX-XXXXX", "rights": ["read", "cosign"] }
+```
+
+The entry is stored against `PNOLV-XXXXXXXXXXX`. The country stays part of the key, so the same
+eleven digits in another country belong to another person and match nothing.
+
+**A `serial` that names no country is now refused** — `422 err:document:invalidSerial`, repeating no
+identity code back. The workflow service that calls this route has already resolved a country from
+the person it invited, so a bare code arriving here means that resolution did not happen: it is a
+fault to name, not a nationality to invent.
+
+### Changed — the metrics endpoint no longer offers OpenMetrics
+
+A scraper that asked for the OpenMetrics format by sending `Accept: application/openmetrics-text`
+used to be answered in it, with the `# EOF` terminator that format requires. This service now
+answers in the Prometheus text format whatever the scraper asks for, and writes no `# EOF`:
+
+```http
+GET /metrics
+Accept: application/openmetrics-text
+
+200 OK
+Content-Type: text/plain; version=0.0.4; charset=utf-8
+```
+
+**The metric names, labels and values are unchanged**, so Prometheus — and anything else that
+accepts the plain-text exposition format — needs nothing done. Two setups need a look: a scrape
+configuration that *requires* the OpenMetrics content type, and a check that reads a missing
+`# EOF` as a truncated scrape. Both need their expectation relaxed.
+
+The endpoint itself is unchanged otherwise: still `/metrics` (or `METRICS_PATH`), still enabled by
+default, and still answered only for trusted addresses (`METRICS_TRUSTED_IPS`, `127.0.0.1` by
+default) — so if nothing scrapes this service, there is nothing to do. The change arrives from the
+web framework this service is built on rather than from a change of its own, carried in with the
+shared libraries below.
+
+### Notes
+
+- The shared libraries moved to their current releases — the auth client at v0.21.0 and the
+  platform kit at v1.11.2 — which carried the web framework, the HTTP stack and the JOSE library up
+  with them. No endpoint, field, error or setting of this service changed, and no configuration
+  needs touching. The move also clears two published advisories in the cryptography library this
+  service depends on; a third has no fix available yet and was already present before the move, and
+  the vulnerability scanner reports nothing this service's own code can reach.
+
+### Changed — the shared libraries move to their current releases
+
+`go-platform-kit` v1.11.3, `go-authbyte` v0.23.1, `go-docgate` v1.0.4, `go-asice` v1.6.2,
+`go-gdpr-audit` v1.1.5 and `go-sec-events` v1.2.1. No endpoint, field, error or setting changes with
+them, nothing in your configuration needs touching, and this service's own behaviour is unchanged —
+the upload gate admits and refuses exactly what it did before, and containers are read exactly as
+before. `go-authbyte` crosses v0.23.0 on the way, which adds a way to tell a natural person's
+identity code from an organisation's. The Postgres driver `pgx/v5` moves to v5.11.0 in the same
+pass.
+
 ## v0.1.1
 
 ### Fixed — an archive timestamp added by a co-signer is recorded, and answers 200
