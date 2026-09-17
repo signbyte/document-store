@@ -42,8 +42,21 @@ func chainRootID(d *Document) string {
 	return d.ID
 }
 
+// tenantMatches mirrors the organisation check the read procedures apply: a
+// caller acting as a product may only reach rows of the organisation it is
+// acting for. It is a second lock on a door the principal already closes, and
+// it is the one that still holds if a principal is ever written differently.
+func tenantMatches(d *Document, caller Caller) bool {
+	if caller.Product == "" {
+		return true
+	}
+
+	return d.TenantID == caller.Tenant
+}
+
 // allows mirrors document.acl_allows: true when the caller holds right on the
-// chain root, as the owning subject OR an invited (normalized) serial.
+// chain root, as the owning subject, an invited (normalized) serial, OR the
+// product that stored it. The product principal is compared whole.
 func (m *Memory) allows(chainRoot string, caller Caller, right string) bool {
 	nserial := NormalizeSerial(caller.Serial)
 	for _, g := range m.acl {
@@ -54,6 +67,9 @@ func (m *Memory) allows(chainRoot string, caller Caller, right string) bool {
 			return true
 		}
 		if g.Kind == "serial" && nserial != "" && g.Principal == nserial {
+			return true
+		}
+		if g.Kind == PrincipalProduct && caller.Product != "" && g.Principal == caller.Product {
 			return true
 		}
 	}
@@ -120,6 +136,10 @@ func (m *Memory) Insert(_ context.Context, in InsertInput) (string, error) {
 	if presv == "" {
 		presv = "none"
 	}
+	rclass := in.RetentionClass
+	if rclass == "" {
+		rclass = RetentionTTL
+	}
 	m.rows[id] = &Document{
 		ID:                id,
 		Owner:             in.Owner,
@@ -134,6 +154,7 @@ func (m *Memory) Insert(_ context.Context, in InsertInput) (string, error) {
 		Status:            status,
 		EncryptionKeyRef:  in.EncryptionKeyRef,
 		PreservationClass: presv,
+		RetentionClass:    rclass,
 		RetentionUntil:    in.RetentionUntil,
 		InnerFiles:        in.InnerFiles,
 		CreatedAt:         now,
@@ -143,11 +164,19 @@ func (m *Memory) Insert(_ context.Context, in InsertInput) (string, error) {
 	// A newly-uploaded source (a chain root) seeds its creator's standing access;
 	// a co-signed container inherits the root's entry, so it adds none.
 	if in.ParentID == "" {
+		kind := in.OwnerKind
+		if kind == "" {
+			kind = PrincipalSub
+		}
+		rights := []string{"read", "cosign"}
+		if kind == PrincipalProduct {
+			rights = []string{"read"}
+		}
 		m.acl = append(m.acl, aclGrant{
 			ChainRoot: id,
-			Kind:      "sub",
+			Kind:      kind,
 			Principal: in.Owner,
-			Rights:    []string{"read", "cosign"},
+			Rights:    rights,
 		})
 	}
 
@@ -246,6 +275,7 @@ func (m *Memory) Bundle(_ context.Context, in BundleInput) (string, []PurgedRef,
 	if presv == "" {
 		presv = "none"
 	}
+	retention := in.RetentionUntil
 	m.rows[id] = &Document{
 		ID:                id,
 		Owner:             in.Owner,
@@ -259,7 +289,7 @@ func (m *Memory) Bundle(_ context.Context, in BundleInput) (string, []PurgedRef,
 		Status:            "received",
 		EncryptionKeyRef:  in.EncryptionKeyRef,
 		PreservationClass: presv,
-		RetentionUntil:    in.RetentionUntil,
+		RetentionUntil:    &retention,
 		InnerFiles:        in.InnerFiles,
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -374,7 +404,7 @@ func (m *Memory) Get(_ context.Context, id string, caller Caller) (*Document, er
 	defer m.mu.Unlock()
 
 	d, ok := m.rows[id]
-	if !ok || !m.allows(chainRootID(d), caller, "read") {
+	if !ok || !m.allows(chainRootID(d), caller, "read") || !tenantMatches(d, caller) {
 		return nil, ErrNotFound
 	}
 
@@ -441,6 +471,9 @@ func (m *Memory) List(_ context.Context, caller Caller, limit int, after string)
 	var out []*Document
 	for _, d := range m.rows {
 		if d.Status == "deleted" || !m.allows(chainRootID(d), caller, "read") {
+			continue
+		}
+		if !tenantMatches(d, caller) {
 			continue
 		}
 		if after != "" && d.ID >= after {
@@ -837,8 +870,10 @@ func (m *Memory) ChainRetention(_ context.Context, id string) (time.Time, int, e
 			continue
 		}
 		live++
-		if row.RetentionUntil.After(until) {
-			until = row.RetentionUntil
+		// A row with no date is not "zero" here, it is "no end" — it must never
+		// pull the chain's answer DOWN to the zero instant.
+		if row.RetentionUntil != nil && row.RetentionUntil.After(until) {
+			until = *row.RetentionUntil
 		}
 	}
 
@@ -854,8 +889,10 @@ func (m *Memory) ExtendRetention(_ context.Context, id, caller string, until tim
 	if !ok || d.Owner != caller {
 		return ErrNotFound
 	}
-	if until.After(d.RetentionUntil) {
-		d.RetentionUntil = until
+	// Forward only, as before — and a document with no date is already further
+	// out than any instant, so extending it is a no-op rather than a shortening.
+	if d.RetentionUntil != nil && until.After(*d.RetentionUntil) {
+		d.RetentionUntil = &until
 	}
 	d.UpdatedAt = time.Now().UTC()
 
@@ -874,7 +911,7 @@ func (m *Memory) RemoveAccess(_ context.Context, docID string, caller Caller) ([
 		return nil, ErrNotFound
 	}
 	root := chainRootID(d)
-	if !m.allows(root, caller, "read") {
+	if !m.allows(root, caller, "read") || !tenantMatches(d, caller) {
 		return nil, ErrNotFound
 	}
 
@@ -885,13 +922,16 @@ func (m *Memory) RemoveAccess(_ context.Context, docID string, caller Caller) ([
 		}
 	}
 
-	// Drop the caller's own ACL entries (their sub and/or normalized serial).
+	// Drop the caller's own ACL entries (their sub, normalized serial, or the
+	// product they act as — a product-owned document has exactly one entry, so
+	// dropping it IS the release).
 	nserial := NormalizeSerial(caller.Serial)
 	kept := make([]aclGrant, 0, len(m.acl))
 	for _, g := range m.acl {
 		mine := g.ChainRoot == root &&
 			((g.Kind == "sub" && caller.Sub != "" && g.Principal == caller.Sub) ||
-				(g.Kind == "serial" && nserial != "" && g.Principal == nserial))
+				(g.Kind == "serial" && nserial != "" && g.Principal == nserial) ||
+				(g.Kind == PrincipalProduct && caller.Product != "" && g.Principal == caller.Product))
 		if !mine {
 			kept = append(kept, g)
 		}
@@ -930,6 +970,12 @@ func (m *Memory) SweepRetention(_ context.Context, now time.Time, limit int) ([]
 			break
 		}
 		if d.LegalHold || d.Status == "deleted" || d.Status == "expired" {
+			continue
+		}
+		// No date, nothing to act on. This is what keeps a durable document its
+		// owner has not dated: the class is deliberately not consulted, because an
+		// owner that DID set a date expects that date to be honoured.
+		if d.RetentionUntil == nil {
 			continue
 		}
 		if d.RetentionUntil.Before(now) {

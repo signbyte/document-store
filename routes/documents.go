@@ -7,6 +7,7 @@ import (
 	"math"
 	"mime/multipart"
 	"strings"
+	"time"
 
 	"azugo.io/azugo"
 	"github.com/valyala/fasthttp"
@@ -35,6 +36,9 @@ import (
 // @param file formData file true "The document bytes"
 // @param mime formData string false "MIME type override (else the part's Content-Type)"
 // @param preservation_class formData string false "none | b_lt | preservation (default none)"
+// @param retention_class formData string false "ttl | durable (default ttl) — durable needs the documents:durable scope"
+// @param retention_until formData string false "RFC3339 instant; only with retention_class=durable, and only in the future"
+// @failure 403 string string "Durable storage not granted, or no organisation on the token"
 // @success 201 IngestedResponse response.Ingested "Stored"
 // @failure 400 string string "Invalid upload"
 // @failure 413 string string "File too large"
@@ -57,6 +61,23 @@ func (r *router) ingest(ctx *azugo.Context) {
 			pkerrors.WithStatus(fasthttp.StatusBadRequest),
 			pkerrors.WithDetail("preservation_class must be none, b_lt or preservation")))
 
+		return
+	}
+
+	rclass := formField(ctx, "retention_class")
+	if !request.ValidRetentionClass(rclass) {
+		ctx.Error(pkerrors.NewProblem("err:document:invalidRetentionClass",
+			pkerrors.WithStatus(fasthttp.StatusBadRequest),
+			pkerrors.WithDetail("retention_class must be ttl or durable")))
+
+		return
+	}
+
+	// Who owns the document, and who decides when it goes, are settled together and
+	// before any bytes are stored: an upload that cannot answer both is refused
+	// rather than kept under a guess.
+	ownerKind, owner, tenant, until, ok := r.resolveRetention(ctx, rclass)
+	if !ok {
 		return
 	}
 
@@ -108,7 +129,11 @@ func (r *router) ingest(ctx *azugo.Context) {
 	}
 
 	in := documents.IngestInput{
-		Owner:             caller,
+		Owner:             owner,
+		OwnerKind:         ownerKind,
+		TenantID:          tenant,
+		RetentionClass:    rclass,
+		RetentionUntil:    until,
 		Filename:          fh.Filename,
 		Mime:              mime,
 		PreservationClass: presv,
@@ -137,8 +162,72 @@ func (r *router) ingest(ctx *azugo.Context) {
 		Mime:              doc.Mime,
 		Size:              doc.Size,
 		PreservationClass: doc.PreservationClass,
+		RetentionClass:    doc.RetentionClass,
 		HasSignatures:     gate.HasSignatures,
 	})
+}
+
+// resolveRetention settles the ownership and the retention date of a new upload
+// together, because under the durable class they are one decision: the owner is who
+// will be able to release the document later, and the date is that owner's to set.
+// It writes the refusal itself and reports false when the upload must not proceed.
+//
+// Under the default class nothing changes: the person uploading owns the document
+// and this service dates it.
+func (r *router) resolveRetention(ctx *azugo.Context, rclass string) (ownerKind, owner, tenant string, until *time.Time, ok bool) {
+	if rclass != store.RetentionDurable {
+		// The date is this service's to set under the default class, so a caller
+		// offering one is refused rather than quietly ignored — dropping it in
+		// silence would leave the caller believing a retention policy was applied.
+		if formField(ctx, "retention_until") != "" {
+			ctx.Error(pkerrors.NewProblem("err:document:invalidRetentionUntil",
+				pkerrors.WithStatus(fasthttp.StatusBadRequest),
+				pkerrors.WithDetail("retention_until may only be set with retention_class=durable")))
+
+			return "", "", "", nil, false
+		}
+
+		return store.PrincipalSub, callerID(ctx), "", nil, true
+	}
+
+	// Storage that no clock removes is a grant somebody makes deliberately, not a
+	// property every uploader silently holds.
+	if !r.requireScope(ctx, "durable") {
+		return "", "", "", nil, false
+	}
+
+	principal, tenantID := r.productPrincipal(ctx)
+	if principal == "" {
+		r.Audit().Denied(ctx, callerID(ctx), "documents:durable")
+		ctx.Error(pkerrors.NewProblem("err:document:forbidden",
+			pkerrors.WithDetail("a durable document needs a product identity acting for an organisation")))
+
+		return "", "", "", nil, false
+	}
+
+	if v := formField(ctx, "retention_until"); v != "" {
+		t, err := time.Parse(time.RFC3339, v)
+		if err != nil {
+			ctx.Error(pkerrors.NewProblem("err:document:invalidRetentionUntil",
+				pkerrors.WithStatus(fasthttp.StatusBadRequest),
+				pkerrors.WithDetail("retention_until must be an RFC3339 instant")))
+
+			return "", "", "", nil, false
+		}
+		// A date already past means "remove this at the next sweep", which is almost
+		// never what a caller setting a retention policy meant — and these are the
+		// documents nothing else protects.
+		if !t.After(time.Now()) {
+			ctx.Error(pkerrors.NewProblem("err:document:invalidRetentionUntil",
+				pkerrors.WithStatus(fasthttp.StatusBadRequest),
+				pkerrors.WithDetail("retention_until must be in the future")))
+
+			return "", "", "", nil, false
+		}
+		until = &t
+	}
+
+	return store.PrincipalProduct, principal, tenantID, until, true
 }
 
 // writeGateErr maps a document-gate rejection onto the error contract with the
@@ -189,7 +278,7 @@ func (r *router) list(ctx *azugo.Context) {
 			includeExpired = *b
 		}
 
-		chains, err := r.Documents().ListChains(ctx, reqCaller(ctx), limit, after, includeExpired)
+		chains, err := r.Documents().ListChains(ctx, r.reqCaller(ctx), limit, after, includeExpired)
 		if err != nil {
 			r.writeStoreErr(ctx, err)
 
@@ -205,7 +294,7 @@ func (r *router) list(ctx *azugo.Context) {
 		return
 	}
 
-	docs, err := r.Documents().List(ctx, reqCaller(ctx), limit, after)
+	docs, err := r.Documents().List(ctx, r.reqCaller(ctx), limit, after)
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -228,7 +317,7 @@ func (r *router) getDocument(ctx *azugo.Context) {
 		return
 	}
 
-	doc, err := r.Documents().Get(ctx, ctx.Params.String("id"), reqCaller(ctx))
+	doc, err := r.Documents().Get(ctx, ctx.Params.String("id"), r.reqCaller(ctx))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -249,7 +338,7 @@ func (r *router) getDigest(ctx *azugo.Context) {
 		return
 	}
 
-	doc, err := r.Documents().Get(ctx, ctx.Params.String("id"), reqCaller(ctx))
+	doc, err := r.Documents().Get(ctx, ctx.Params.String("id"), r.reqCaller(ctx))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -270,7 +359,7 @@ func (r *router) getContent(ctx *azugo.Context) {
 	}
 	caller := callerID(ctx)
 
-	doc, data, err := r.Documents().Content(ctx, ctx.Params.String("id"), reqCaller(ctx))
+	doc, data, err := r.Documents().Content(ctx, ctx.Params.String("id"), r.reqCaller(ctx))
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound), errors.Is(err, documents.ErrGone):
@@ -317,7 +406,7 @@ func (r *router) deleteDocument(ctx *azugo.Context) {
 	}
 	caller := callerID(ctx)
 
-	doc, err := r.Documents().Delete(ctx, ctx.Params.String("id"), reqCaller(ctx))
+	doc, err := r.Documents().Delete(ctx, ctx.Params.String("id"), r.reqCaller(ctx))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -538,7 +627,7 @@ func (r *router) complete(ctx *azugo.Context) {
 	// container's owner column is provenance only — access is governed by the chain
 	// ACL — so the first signature stores it under the caller and a co-sign then
 	// replaces that one container in place.
-	srcDoc, srcBytes, err := r.Documents().Content(ctx, id, reqCaller(ctx))
+	srcDoc, srcBytes, err := r.Documents().Content(ctx, id, r.reqCaller(ctx))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -574,7 +663,7 @@ func (r *router) complete(ctx *azugo.Context) {
 	// only adds a signature.
 	doc, err := r.Documents().Ingest(ctx, documents.IngestInput{
 		Owner:             caller,
-		Serial:            reqCaller(ctx).Serial, // so a co-signer signing first can read back their new container (chain ACL grants them by serial, not sub)
+		Serial:            r.reqCaller(ctx).Serial, // so a co-signer signing first can read back their new container (chain ACL grants them by serial, not sub)
 		Kind:              "container",
 		ParentID:          id,
 		Filename:          containerName(srcDoc.Filename),
@@ -601,13 +690,13 @@ func (r *router) complete(ctx *azugo.Context) {
 	// Lost the create race: another party's first co-sign already created the chain's
 	// container. Re-resolve it and co-sign into it (reading its current bytes + hash in
 	// one pass, so the keep-latest CAS is against the value we merged over).
-	winner, werr := r.Documents().GetContainerByParent(ctx, id, reqCaller(ctx))
+	winner, werr := r.Documents().GetContainerByParent(ctx, id, r.reqCaller(ctx))
 	if werr != nil {
 		r.writeStoreErr(ctx, werr)
 
 		return
 	}
-	winnerDoc, winnerBytes, werr := r.Documents().Content(ctx, winner.ID, reqCaller(ctx))
+	winnerDoc, winnerBytes, werr := r.Documents().Content(ctx, winner.ID, r.reqCaller(ctx))
 	if werr != nil {
 		r.writeStoreErr(ctx, werr)
 
@@ -667,7 +756,7 @@ func (r *router) chainHead(ctx *azugo.Context) {
 	root := ctx.Params.String("id")
 
 	// A signed PDF is the head for a PAdES chain; a container for an ASiC-E chain.
-	pdf, err := r.Documents().GetLatestSignedPdfByChain(ctx, root, reqCaller(ctx))
+	pdf, err := r.Documents().GetLatestSignedPdfByChain(ctx, root, r.reqCaller(ctx))
 	if err == nil {
 		ctx.JSON(&response.ChainHead{ID: pdf.ID, Kind: pdf.Kind, ContentHash: pdf.ContentHash})
 
@@ -679,7 +768,7 @@ func (r *router) chainHead(ctx *azugo.Context) {
 		return
 	}
 
-	cont, err := r.Documents().GetContainerByParent(ctx, root, reqCaller(ctx))
+	cont, err := r.Documents().GetContainerByParent(ctx, root, r.reqCaller(ctx))
 	if err == nil {
 		ctx.JSON(&response.ChainHead{ID: cont.ID, Kind: cont.Kind, ContentHash: cont.ContentHash})
 
@@ -718,7 +807,7 @@ func (r *router) chain(ctx *azugo.Context) {
 		return
 	}
 
-	c, err := r.Documents().GetChain(ctx, reqCaller(ctx), ctx.Params.String("id"))
+	c, err := r.Documents().GetChain(ctx, r.reqCaller(ctx), ctx.Params.String("id"))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -747,7 +836,7 @@ func (r *router) dataObjects(ctx *azugo.Context) {
 		return
 	}
 
-	doc, data, err := r.Documents().Content(ctx, ctx.Params.String("id"), reqCaller(ctx))
+	doc, data, err := r.Documents().Content(ctx, ctx.Params.String("id"), r.reqCaller(ctx))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -912,7 +1001,7 @@ func (r *router) extractObject(ctx *azugo.Context) {
 	}
 	caller := callerID(ctx)
 
-	doc, data, err := r.Documents().Content(ctx, ctx.Params.String("id"), reqCaller(ctx))
+	doc, data, err := r.Documents().Content(ctx, ctx.Params.String("id"), r.reqCaller(ctx))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -1037,7 +1126,7 @@ func (r *router) addSignature(ctx *azugo.Context) {
 		return
 	}
 
-	contDoc, contBytes, err := r.Documents().Content(ctx, id, reqCaller(ctx))
+	contDoc, contBytes, err := r.Documents().Content(ctx, id, r.reqCaller(ctx))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -1125,7 +1214,7 @@ func (r *router) storeSigned(ctx *azugo.Context) {
 	// Read the parent for lineage + preservation class (ACL-authorized: the signer
 	// must be on the chain). Anchor the signed-document chain at the chain root, so a
 	// co-sign of a prior signed document still hangs off the same root.
-	parent, err := r.Documents().Get(ctx, id, reqCaller(ctx))
+	parent, err := r.Documents().Get(ctx, id, r.reqCaller(ctx))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -1150,7 +1239,7 @@ func (r *router) storeSigned(ctx *azugo.Context) {
 
 	doc, err := r.Documents().Ingest(ctx, documents.IngestInput{
 		Owner:             caller,
-		Serial:            reqCaller(ctx).Serial, // read the new row back under the chain ACL (a co-signer is granted by serial, not sub)
+		Serial:            r.reqCaller(ctx).Serial, // read the new row back under the chain ACL (a co-signer is granted by serial, not sub)
 		Kind:              "pdf",
 		ParentID:          chainRoot,
 		Filename:          fh.Filename,
@@ -1258,7 +1347,7 @@ func (r *router) signedFormIsPdf(ctx *azugo.Context, caller string, data []byte)
 // the caller signed on top of, so a mismatch means a concurrent advance → 409 to retry.
 // Writes the HTTP response.
 func (r *router) supersedeSignedPdf(ctx *azugo.Context, caller, chainRoot string, data []byte) {
-	head, err := r.Documents().GetLatestSignedPdfByChain(ctx, chainRoot, reqCaller(ctx))
+	head, err := r.Documents().GetLatestSignedPdfByChain(ctx, chainRoot, r.reqCaller(ctx))
 	if err != nil {
 		r.Audit().IngestOutcome(ctx, caller, false)
 		r.writeStoreErr(ctx, err)
@@ -1320,7 +1409,7 @@ func (r *router) storeArchived(ctx *azugo.Context) {
 		return
 	}
 
-	head, err := r.Documents().Get(ctx, id, reqCaller(ctx))
+	head, err := r.Documents().Get(ctx, id, r.reqCaller(ctx))
 	if err != nil {
 		r.writeStoreErr(ctx, err)
 
@@ -1429,7 +1518,7 @@ func (r *router) deleteHistory(ctx *azugo.Context) {
 func (r *router) storeContainer(ctx *azugo.Context, caller, parentID, presv, filename string, container []byte) *store.Document {
 	doc, err := r.Documents().Ingest(ctx, documents.IngestInput{
 		Owner:             caller,
-		Serial:            reqCaller(ctx).Serial, // so a co-signer signing first can read back their new container (chain ACL grants them by serial, not sub)
+		Serial:            r.reqCaller(ctx).Serial, // so a co-signer signing first can read back their new container (chain ACL grants them by serial, not sub)
 		Kind:              "container",
 		ParentID:          parentID,
 		Filename:          filename,

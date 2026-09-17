@@ -9,8 +9,9 @@ import (
 
 func mustInsert(t *testing.T, m *Memory, in InsertInput) string {
 	t.Helper()
-	if in.RetentionUntil.IsZero() {
-		in.RetentionUntil = time.Now().Add(time.Hour)
+	if in.RetentionUntil == nil {
+		until := time.Now().Add(time.Hour)
+		in.RetentionUntil = &until
 	}
 	if in.ContentHash == "" {
 		in.ContentHash = "hash"

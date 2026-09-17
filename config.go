@@ -106,6 +106,44 @@ type Configuration struct {
 	// write the eidas_audit chain directly. Broker connection comes from BROKER_URL
 	// (BaseConfiguration.Broker); without it events go to the dev log transport.
 	DocumentEventsTopic string `mapstructure:"document_events_topic"`
+
+	// --- Products allowed to own documents ---
+	// DocumentProductClients maps the service clients that may own documents to
+	// the product each one belongs to, as `client=product` pairs separated by
+	// commas — for example `svc:example-documents=example`.
+	//
+	// The mapping exists because a document a product keeps for an organisation
+	// must still be reachable after that product's credential changes. The
+	// credential is an operational name that gets rotated, renamed and split; the
+	// product is not. Storing the product means ownership survives all three,
+	// which matters more here than anywhere else in this service: a document
+	// nobody is left able to release is one nothing can ever remove.
+	//
+	// A client that is not listed cannot store a document under its own
+	// ownership, whatever scopes it holds.
+	DocumentProductClients string `mapstructure:"document_product_clients"`
+}
+
+// ProductFor is the product a service client belongs to, or "" when the client is
+// not one that may own documents. Parsed on each call: the list is a handful of
+// entries read once per upload, and keeping it a plain string keeps the
+// configuration a single environment variable.
+func (c *Configuration) ProductFor(clientID string) string {
+	if clientID == "" || c.DocumentProductClients == "" {
+		return ""
+	}
+
+	for _, pair := range strings.Split(c.DocumentProductClients, ",") {
+		name, product, ok := strings.Cut(strings.TrimSpace(pair), "=")
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(name) == clientID {
+			return strings.TrimSpace(product)
+		}
+	}
+
+	return ""
 }
 
 // NewConfiguration returns the configuration skeleton for binding.
@@ -130,6 +168,7 @@ func (c *Configuration) Bind(_ string, v *viper.Viper) {
 	v.SetDefault("document_retention_sweep_batch", 500)
 	v.SetDefault("document_history_retention", 90*24*time.Hour)
 	_ = v.BindEnv("document_history_retention", "DOCUMENT_HISTORY_RETENTION")
+	_ = v.BindEnv("document_product_clients", "DOCUMENT_PRODUCT_CLIENTS")
 
 	// Dev-only user-token concession (off by default).
 

@@ -1,6 +1,6 @@
 # document-store
 
-The eSignature portal's **Document Service** — the platform's **single source of truth for document bytes and hashes**. It owns ingest, the canonical **SHA-256** digest (FIPS 180-4), envelope-encrypted object storage with a per-object KMS-wrapped data key, a 24-hour retention TTL with a background sweep, ASiC-E container assembly / completion (ETSI EN 319 162-1), and a signed-PDF (PAdES, ETSI EN 319 142-1) store guarded by a one-live-document-per-chain rule.
+The eSignature portal's **Document Service** — the platform's **single source of truth for document bytes and hashes**. It owns ingest, the canonical **SHA-256** digest (FIPS 180-4), envelope-encrypted object storage with a per-object KMS-wrapped data key, a 24-hour retention TTL with a background sweep (and a **durable** class for a document a product keeps until it releases it), ASiC-E container assembly / completion (ETSI EN 319 162-1), and a signed-PDF (PAdES, ETSI EN 319 142-1) store guarded by a one-live-document-per-chain rule.
 
 It is a **pure byte supplier**. It computes and stores the digest once at ingest and hands it out on request; it holds every byte encrypted at rest and returns decrypted bytes only to an authorized caller. It **does not sign** and **does not call the signer** — a separate orchestrating service fetches a digest (confidential hash-only signing) or the container bytes from here and drives the signer itself. It **does not run signature validation**: on assembly it self-checks the container's digest references locally (a pure-Go integrity check, no external validation service), but the cryptographic validation verdict belongs to the orchestrator.
 
@@ -45,11 +45,11 @@ Division of labour, drawn at the **byte-ownership boundary**: `document-store` o
 
 ## HTTP surface
 
-Everything below `/api/v1` is behind DPoP service-token authentication (audience `svc:document`) and a `documents:<level>` scope check. Errors are RFC 9457 problem documents (`err:document:<reason>`). Liveness / readiness are unauthenticated and carry no error envelope.
+Everything below `/api/v1` is behind DPoP service-token authentication (audience `svc:document`) and a `documents:<level>` scope check — `read`, `write`, `grant`, and `durable` for the one act that creates storage no clock removes. Errors are RFC 9457 problem documents (`err:document:<reason>`). Liveness / readiness are unauthenticated and carry no error envelope.
 
 | Method + path | Scope | Purpose |
 |---|---|---|
-| `POST /api/v1/documents` | `write` | **Ingest** (multipart `file`, optional `mime` / `preservation_class`): the **document gate** first (filename hygiene, size caps, structural checks on content that claims or appears to be PDF / ASiC-E — typed `422 err:document:malformedUpload` / `413` rejects; other formats stored opaque), an optional malware scan (`CLAMAV_ENDPOINT`), then canonical SHA-256 → envelope-encrypt → object store → persist a row with `retention_until = now + TTL`. An upload already carrying a signature is recorded as signed (`kind=pdf` / container) and reported via `hasSignatures`. Returns `{id, contentHash, mime, size, preservationClass, hasSignatures}`. This is the only gated route — the internal store-back routes receive platform-produced bytes. |
+| `POST /api/v1/documents` | `write` (+ `durable`) | **Ingest** (multipart `file`, optional `mime` / `preservation_class` / `retention_class` / `retention_until`): the **document gate** first (filename hygiene, size caps, structural checks on content that claims or appears to be PDF / ASiC-E — typed `422 err:document:malformedUpload` / `413` rejects; other formats stored opaque), an optional malware scan (`CLAMAV_ENDPOINT`), then canonical SHA-256 → envelope-encrypt → object store → persist a row with `retention_until = now + TTL`. An upload already carrying a signature is recorded as signed (`kind=pdf` / container) and reported via `hasSignatures`. Returns `{id, contentHash, mime, size, preservationClass, retentionClass, hasSignatures}`. `retention_class=durable` stores the document under the **product** identity instead of a person, with no TTL — it needs the `documents:durable` scope, an organisation on the token and a client listed in `DOCUMENT_PRODUCT_CLIENTS`, and it refuses `403` without all three. An optional `retention_until` (RFC3339, future, durable only) is the owner's own deadline and **is enforced by the same sweep**. This is the only gated route — the internal store-back routes receive platform-produced bytes. |
 | `GET /api/v1/documents` | `read` | Caller-scoped listing, keyset-paginated (`?after=`, `?limit=`). `?view=chains` collapses it to **one live-head row per document chain** (the signed artifact where one exists, else the source — never both), paginated by chain root id; expired chains are omitted unless `?includeExpired=true`. |
 | `GET /api/v1/documents/{id}` | `read` | One ACL-authorized metadata row (no bytes). |
 | `GET /api/v1/documents/{id}/content` | `read` | **Decrypted bytes** (re-fetch / download). Emits a GDPR personal-data-access audit event per retrieval. While the chain's **result freeze** is set, a non-source row refuses with a typed 409 (`err:document:resultFrozen`) unless the caller declares a platform conduit purpose (`?conduit=signing\|render`) — refusal is the fail-closed default; sources always serve. |
@@ -203,7 +203,11 @@ On read it fetches the sealed blob, unwraps the data key through the KMS, and op
 
 The KMS is an interface seam. The development provider is a **local** AES-256 master key (from `DOCUMENT_KMS_MASTER_KEY`, base64 of 32 bytes; an ephemeral key is generated if unset — dev only, since bytes become undecryptable after a restart). Production swaps in a managed KMS (e.g. Vault transit or a cloud KMS) behind the same interface, with no change to the storage layer.
 
-Every stored object carries a **`retention_until`** set to `now + TTL` (24 hours by default). A background sweep destroys the sealed object and its data key once that instant passes (unless the row is under legal hold) and flips the row to `expired`. Bytes are minimised by default; durable retention is an explicit, per-document opt-in (the preservation class), not the norm.
+Every stored object carries a **`retention_class`** saying who decides when it goes. Under `ttl` — the default, and what every document stored before this existed carries — the service sets `retention_until` to `now + TTL` (24 hours by default). A background sweep destroys the sealed object and its data key once that instant passes (unless the row is under legal hold) and flips the row to `expired`.
+
+Under `durable` the date is the **owner's**: it may leave it unset, and then nothing removes the document until the owner releases it, or set a deadline of its own — an organisation's data-protection policy is exactly that case — which the same sweep then enforces. So **what protects a document from the sweep is having no date, never which class it carries**: reading the class instead would turn an owner's own deadline into a suggestion. Bytes stay minimised by default; durable is a deliberate, separately granted opt-in, not the norm.
+
+Retention is **not** the preservation class, which says how well a *signature* is preserved. A document can be signature-preserved and short-lived, or unsigned and kept for years.
 
 ---
 
@@ -224,7 +228,7 @@ Access is exclusively through the schema's `SECURITY DEFINER` procedures, called
 | `document.extend_retention` · `document.set_status` | Roll retention forward / set status |
 | `document.sweep_retention` | Flip expired non-hold rows to `expired` and return the byte refs to purge |
 
-A document row records `owner`, `kind` (`source` / `container` / `pdf`), the chain `parent_id`, the canonical `content_hash`, `mime`, `size`, `status`, `preservation_class`, `retention_until`, `legal_hold`, and the internal `storage_ref` / `encryption_key_ref` (both nulled once bytes are purged). The two byte-location refs are never exposed on the API projection.
+A document row records `owner`, `kind` (`source` / `container` / `pdf`), the chain `parent_id`, the canonical `content_hash`, `mime`, `size`, `status`, `preservation_class`, `retention_class`, `retention_until` (null when nothing is scheduled to remove it), `tenant_id`, `legal_hold`, and the internal `storage_ref` / `encryption_key_ref` (both nulled once bytes are purged). The two byte-location refs are never exposed on the API projection.
 
 An access entry binds a **chain** to a principal — the owner by token subject, or an invited co-signer by their **eIDAS serial** (identity code) in the platform's one canonical spelling, which is carried through on-behalf delegation so a co-signer matches their invited slot whichever way each side writes the code. This is how a person invited to co-sign gains read + co-sign access without being the document's owner.
 
@@ -240,7 +244,8 @@ Standard fleet env (`SERVER_URLS`, `SERVICE_NAME`, `ENVIRONMENT`, `LOG_*`, `METR
 | `SERVICE_AUDIENCE` | — | Expected token audience (`svc:document`) |
 | `DOCUMENT_STORE_DSN` | — | PostgreSQL DSN for the `EXECUTE`-only role. Unset ⇒ in-memory metadata store (development only). Supports the `_FILE` secret convention. Pool size comes from the DSN itself — `pool_max_conns` (pgx reads it and strips it before Postgres sees it; its default is the host's CPU count): set it explicitly to the deployment's connection budget, e.g. `?sslmode=…&pool_max_conns=4&pool_min_conns=1`. |
 | `MAX_FILE_BYTES` | `26214400` (25 MiB) | Per-file upload cap (checked before read) |
-| `DOCUMENT_RETENTION_TTL` | `24h` | Retention window applied at ingest |
+| `DOCUMENT_RETENTION_TTL` | `24h` | Retention window applied at ingest under the default `ttl` class |
+| `DOCUMENT_PRODUCT_CLIENTS` | — | Which service clients may own documents, as `client=product` pairs (`svc:example-documents=example`, comma-separated). The **product** is recorded as the owner, not the client id, so rotating or renaming that credential leaves every document it stored still owned and still releasable. A client that is not listed cannot store a product-owned document, whatever scopes it holds. Unset ⇒ the durable class is unreachable |
 | `DOCUMENT_RETENTION_SWEEP_INTERVAL` | `15m` | Retention sweep cadence |
 | `DOCUMENT_RETENTION_SWEEP_BATCH` | `500` | Rows purged per sweep batch |
 | `DOCUMENT_HISTORY_RETENTION` | `2160h` (90 days) | How long a terminal chain's metadata record stays readable as history after its bytes are destroyed; the sweep erases older records (data minimisation). **`0` disables the erasure**, so history is kept indefinitely — a deliberate choice, not a safe default |
@@ -325,7 +330,7 @@ Apply the `document` schema migrations against PostgreSQL before running with a 
 
 - **Bytes never in the database, never in the clear at rest.** Document bytes live only in the object store, sealed with AES-256-GCM under a per-object, KMS-wrapped data key; the plaintext data key never persists.
 - **Bytes never in a log, trace, metric, or error message.** Domain events and audit records carry a digest and metadata, never content; unmapped errors are logged server-side and returned as a fixed problem code.
-- **On-behalf access only.** Every content read is an authenticated, scope-checked, ACL-authorized call, audited as a personal-data access; access is bound by token subject or invited eIDAS serial, DB-enforced (no-IDOR — absence and no-access are indistinguishable).
+- **On-behalf access only.** Every content read is an authenticated, scope-checked, ACL-authorized call, audited as a personal-data access; access is bound by token subject, invited eIDAS serial, or the owning product-under-organisation, DB-enforced (no-IDOR — absence and no-access are indistinguishable, including for another organisation's identity reading a product-owned id).
 - **Least-privilege data plane.** The database role is `EXECUTE`-only on `SECURITY DEFINER` procedures and cannot read or write a table.
 - **Fail closed on integrity.** Container assembly self-checks digest references (count + filename + SHA-256) before storing; a mismatch is rejected, not stored.
 - **Downloads can never run as a script.** A document can be any file type a user wants signed, so every raw-bytes download (`content`, `data-objects/{name}`) sets `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff` and coerces browser-active content types (HTML/XHTML/SVG/XML) to `application/octet-stream` — the stored bytes are untouched, only the outbound header/type changes.

@@ -26,7 +26,7 @@ func TestFromStoreMapsAllFields(t *testing.T) {
 		Status:            "signed",
 		EncryptionKeyRef:  "should-not-leak",
 		PreservationClass: "b_lt",
-		RetentionUntil:    retention,
+		RetentionUntil:    &retention,
 		LegalHold:         true,
 		InnerFiles: []store.ManifestFile{
 			{Name: "content.txt", MediaType: "text/plain", Size: 42},
@@ -49,7 +49,7 @@ func TestFromStoreMapsAllFields(t *testing.T) {
 		Size:              1234,
 		Status:            "signed",
 		PreservationClass: "b_lt",
-		RetentionUntil:    retention,
+		RetentionUntil:    &retention,
 		LegalHold:         true,
 		InnerFiles:        []InnerFile{{Name: "content.txt", MediaType: "text/plain", Size: 42}},
 		CreatedAt:         created,
@@ -60,7 +60,7 @@ func TestFromStoreMapsAllFields(t *testing.T) {
 		got.Kind != want.Kind || got.ParentID != want.ParentID || got.Filename != want.Filename ||
 		got.ContentHash != want.ContentHash || got.Mime != want.Mime || got.Size != want.Size ||
 		got.Status != want.Status || got.PreservationClass != want.PreservationClass ||
-		!got.RetentionUntil.Equal(want.RetentionUntil) || got.LegalHold != want.LegalHold ||
+		!sameInstant(got.RetentionUntil, want.RetentionUntil) || got.LegalHold != want.LegalHold ||
 		!got.CreatedAt.Equal(want.CreatedAt) || !got.UpdatedAt.Equal(want.UpdatedAt) {
 		t.Fatalf("FromStore mismatch:\ngot  %+v\nwant %+v", got, want)
 	}
@@ -77,4 +77,14 @@ func TestFromStoreNoInnerFiles(t *testing.T) {
 	if got.InnerFiles != nil {
 		t.Fatalf("InnerFiles = %#v, want nil for a plain source", got.InnerFiles)
 	}
+}
+
+// sameInstant compares two optional instants: both absent is a match, and one
+// absent is not. A plain Equal would dereference a document that has no date.
+func sameInstant(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+
+	return a.Equal(*b)
 }

@@ -47,24 +47,50 @@ type ManifestFile struct {
 	Size      int64  `json:"size,omitempty"`
 }
 
+// The two retention classes. They name WHO decides when a document goes — the
+// service or its owner — and not whether a date exists at all: a durable document
+// may carry a date its owner set, and is then swept on that date like any other.
+const (
+	RetentionTTL     = "ttl"
+	RetentionDurable = "durable"
+)
+
+// The kinds of principal an access entry can name: a person, an invited
+// signatory's identity code, or a product acting for one organisation.
+const (
+	PrincipalSub     = "sub"
+	PrincipalSerial  = "serial"
+	PrincipalProduct = "product"
+)
+
 // Document is one metadata row. Bytes are NOT here: they live in S3 under
 // StorageRef, encrypted with the KMS-wrapped data key in EncryptionKeyRef.
 type Document struct {
-	ID                string    `json:"id"`
-	Owner             string    `json:"owner"`
-	TenantID          string    `json:"tenant_id,omitempty"`
-	Kind              string    `json:"kind"` // source | container
-	ParentID          string    `json:"parent_id,omitempty"`
-	Filename          string    `json:"filename,omitempty"`
-	StorageRef        string    `json:"storage_ref,omitempty"` // S3 object key (empty once purged)
-	ContentHash       string    `json:"content_hash"`          // canonical SHA-256 (B1), base64
-	Mime              string    `json:"mime"`
-	Size              int64     `json:"size"`
-	Status            string    `json:"status"`                       // received|signing|signed|expired|deleted
-	EncryptionKeyRef  string    `json:"encryption_key_ref,omitempty"` // KMS-wrapped data key (empty once destroyed)
-	PreservationClass string    `json:"preservation_class"`           // none|b_lt|preservation
-	RetentionUntil    time.Time `json:"retention_until"`
-	LegalHold         bool      `json:"legal_hold"`
+	ID                string `json:"id"`
+	Owner             string `json:"owner"`
+	TenantID          string `json:"tenant_id,omitempty"`
+	Kind              string `json:"kind"` // source | container
+	ParentID          string `json:"parent_id,omitempty"`
+	Filename          string `json:"filename,omitempty"`
+	StorageRef        string `json:"storage_ref,omitempty"` // S3 object key (empty once purged)
+	ContentHash       string `json:"content_hash"`          // canonical SHA-256 (B1), base64
+	Mime              string `json:"mime"`
+	Size              int64  `json:"size"`
+	Status            string `json:"status"`                       // received|signing|signed|expired|deleted
+	EncryptionKeyRef  string `json:"encryption_key_ref,omitempty"` // KMS-wrapped data key (empty once destroyed)
+	PreservationClass string `json:"preservation_class"`           // none|b_lt|preservation
+	// RetentionClass says WHO decides when this document goes: "ttl" (the
+	// service dates it at ingest, the default and what every stored document
+	// has been until now) or "durable" (its owner does). It is not a
+	// preservation level: a document can be signature-preserved and
+	// short-lived, or unsigned and kept for years.
+	RetentionClass string `json:"retention_class"`
+	// RetentionUntil is nil when nothing is scheduled to remove this document —
+	// a durable document whose owner has not dated it. A nil date is the ONLY
+	// thing that protects a row from the sweep; the class does not, because an
+	// owner may set a date of its own and expects it to be honoured.
+	RetentionUntil *time.Time `json:"retention_until"`
+	LegalHold      bool       `json:"legal_hold"`
 	// SignedAt is the instant the PLATFORM applied a signature to this row in
 	// place (the keep-latest replace); nil for uploads, including files that
 	// arrived already signed. Together with a set ParentID it answers "was this
@@ -92,18 +118,19 @@ type Document struct {
 // ChainCreatedAt is when the chain started (the root's created_at, falling
 // back to the head's when the root row is gone).
 type Chain struct {
-	ChainRootID       string    `json:"chain_root_id"`
-	ID                string    `json:"id"`
-	Kind              string    `json:"kind"`
-	Status            string    `json:"status"`
-	Filename          string    `json:"filename,omitempty"`
-	Mime              string    `json:"mime"`
-	Size              int64     `json:"size"`
-	RetentionUntil    time.Time `json:"retention_until"`
-	LegalHold         bool      `json:"legal_hold"`
-	PreservationClass string    `json:"preservation_class"` // none|b_lt|preservation — 'preservation' once archive-timestamped (B-LTA)
-	HasSignatures     bool      `json:"has_signatures"`
-	PlatformSigned    bool      `json:"platform_signed"`
+	ChainRootID string `json:"chain_root_id"`
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Status      string `json:"status"`
+	Filename    string `json:"filename,omitempty"`
+	Mime        string `json:"mime"`
+	Size        int64  `json:"size"`
+	// RetentionUntil is nil when the head has no date scheduled against it.
+	RetentionUntil    *time.Time `json:"retention_until"`
+	LegalHold         bool       `json:"legal_hold"`
+	PreservationClass string     `json:"preservation_class"` // none|b_lt|preservation — 'preservation' once archive-timestamped (B-LTA)
+	HasSignatures     bool       `json:"has_signatures"`
+	PlatformSigned    bool       `json:"platform_signed"`
 	// ResultFrozen mirrors the chain's download freeze so a listing consumer
 	// renders the row as in-signing rather than draft/completed while a
 	// workflow is in progress.
@@ -150,7 +177,15 @@ type InsertInput struct {
 	Status            string
 	EncryptionKeyRef  string
 	PreservationClass string
-	RetentionUntil    time.Time
+	// OwnerKind is "sub" (a person, the default) or "product" (a product acting
+	// for one organisation). A product owner requires TenantID: without it there
+	// is nobody identifiable to release the document later.
+	OwnerKind string
+	// RetentionClass is "ttl" (the default) or "durable". A durable document may
+	// be stored with a nil RetentionUntil, and then nothing removes it until its
+	// owner does.
+	RetentionClass string
+	RetentionUntil *time.Time
 	// InnerFiles is the ASiC-E inner-file manifest to persist for a container
 	// (captured from go-asice Inspect at write time); nil for a plain source.
 	InnerFiles []ManifestFile
@@ -172,6 +207,15 @@ type PurgedRef struct {
 type Caller struct {
 	Sub    string
 	Serial string
+	// Product is the product-under-organisation principal a service call acts
+	// as, derived from the credential it authenticated with — never from
+	// anything in the request. Empty for a person's call. Tenant is the
+	// organisation that principal is acting for, and a product-owned row must
+	// carry the same one: the organisation is inside the principal already, so
+	// this is the check that still holds if a principal is ever written
+	// differently.
+	Product string
+	Tenant  string
 }
 
 // NormalizeSerial is the canonical form of an eIDAS identity code for ACL

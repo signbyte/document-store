@@ -8,6 +8,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 
+	"github.com/gmb-lib/go-authbyte/claims"
 	"github.com/gmb-lib/go-authbyte/identitycode"
 	pkerrors "github.com/gmb-lib/go-platform-kit/errors"
 
@@ -80,6 +81,9 @@ func Init(a *documentstore.App) error {
 //
 //	read — metadata / content / digest / list
 //	write — ingest / complete / assemble / add-signature / signed / delete
+//	durable — storing a document no clock will remove. Its own level because
+//	  every uploader holds `write`, and a compromised token that also held this
+//	  one by default could create storage nothing ever cleans up.
 func (r *router) requireScope(ctx *azugo.Context, level string) bool {
 	if ctx.User().HasScopeLevel("documents", level) {
 		return true
@@ -96,10 +100,31 @@ func (r *router) requireScope(ctx *azugo.Context, level string) bool {
 // the person `sub` a delegated token acts for). It is the document `owner` on ingest.
 func callerID(ctx *azugo.Context) string { return ctx.User().ID() }
 
+// productPrincipal is the owner a product-owned document carries: the product
+// this credential belongs to, and the organisation the token names. Both come from
+// the token — the client id it authenticated as, and its tenant claim — and never
+// from the request, so no caller can name an owner it is not.
+//
+// It returns "" when this client owns no documents or the token names no
+// organisation. Either way there is no owner to record, and the upload is refused
+// rather than stored under a guess.
+func (r *router) productPrincipal(ctx *azugo.Context) (principal, tenant string) {
+	tenant = ctx.User().ClaimValue(claims.ClaimTenant)
+	product := r.Config().ProductFor(ctx.User().ID())
+	if product == "" || tenant == "" {
+		return "", tenant
+	}
+
+	return "product:" + product + ":" + tenant, tenant
+}
+
 // reqCaller is the authenticated principal for an ACL-authorized read: the
 // subject plus the eIDAS serial claim (present on a named person's token, and
-// carried through on-behalf delegation — so a co-signer matches an invited slot).
-func reqCaller(ctx *azugo.Context) store.Caller {
+// carried through on-behalf delegation — so a co-signer matches an invited slot),
+// plus the product principal when the credential belongs to one. A caller may be
+// both: a person's delegated token that happens to reach a product-owned document
+// matches on neither, which is the point.
+func (r *router) reqCaller(ctx *azugo.Context) store.Caller {
 	// The serial is reduced to the one spelling this platform compares before it is
 	// matched against a chain grant. The claim is already canonical when it comes
 	// from this platform's own identity service; reducing it again costs nothing and
@@ -110,7 +135,14 @@ func reqCaller(ctx *azugo.Context) store.Caller {
 		serial = identitycode.Key(serial)
 	}
 
-	return store.Caller{Sub: ctx.User().ID(), Serial: serial}
+	principal, tenant := r.productPrincipal(ctx)
+
+	return store.Caller{
+		Sub:     ctx.User().ID(),
+		Serial:  serial,
+		Product: principal,
+		Tenant:  tenant,
+	}
 }
 
 // writeStoreErr maps store/domain errors to the right HTTP status.
