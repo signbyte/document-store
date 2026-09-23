@@ -144,7 +144,7 @@ func TestGrantACLMatchesAcrossSpellingsAndNotAcrossCountries(t *testing.T) {
 	foreign, err := tc.Get("/api/v1/documents/"+id,
 		tc.WithHeader("X-Test-Scopes", scopeRead),
 		tc.WithHeader("X-Test-Sub", "cosigner-z"),
-		tc.WithHeader("X-Test-Serial", "PNOLT-12345678900"))
+		tc.WithHeader("X-Test-Serial", "PNOLT-"+strings.TrimPrefix(testSerialStored(123456, 78900), "PNOLV-")))
 	qt.Assert(t, qt.IsNil(err))
 	qt.Check(t, qt.Equals(foreign.StatusCode(), fasthttp.StatusNotFound))
 	fasthttp.ReleaseResponse(foreign)
