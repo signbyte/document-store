@@ -30,7 +30,7 @@ type Store interface {
 	Ping(ctx context.Context) error
 }
 
-// S3 is the production blob store (MinIO/Scality via minio-go).
+// S3 is the production blob store (any S3-API store, via minio-go).
 type S3 struct {
 	client *minio.Client
 	bucket string

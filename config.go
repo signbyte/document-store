@@ -50,7 +50,7 @@ type Configuration struct {
 	// signing path's body limit.
 	MaxFileBytes int64 `mapstructure:"max_file_bytes" validate:"required,gt=0"`
 
-	// --- Encrypted byte store: S3-API object storage (MinIO/Scality) ---
+	// --- Encrypted byte store: S3-API object storage (e.g. RustFS, Scality) ---
 	// Coded to the S3 API via minio-go (the platform object-storage standard, not a
 	// vendor SDK). When S3Endpoint + S3Bucket are set the S3 backend is used;
 	// otherwise an in-memory blob store backs dev/test.

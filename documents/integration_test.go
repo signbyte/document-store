@@ -2,8 +2,8 @@
 
 // Phase-B data-plane smoke: exercises the Document Service domain core against a
 // LIVE PostgreSQL 16 (the `document` schema reached through its SECURITY DEFINER
-// procedures under the EXECUTE-only `document_public` role) and a LIVE MinIO
-// (S3-API) blob store, with real KMS envelope encryption. It is the keystone
+// procedures under the EXECUTE-only `document_public` role) and a LIVE S3-API
+// blob store (RustFS in the dev stack), with real KMS envelope encryption. It is the keystone
 // proof that the byte/hash owner works end to end on real infrastructure: upload
 // (canonical SHA-256 + envelope-encrypt + object store + metadata insert),
 // encrypted-bytes round-trip, fileless ASiC-E completion + reference check, the
@@ -13,7 +13,7 @@
 //
 // Excluded from the normal unit build by the `integration` tag, and skipped when
 // DOCUMENT_STORE_DSN is unset, so `go test ./...` stays hermetic. To run it bring
-// up postgres + minio (the stack's document subset) and:
+// up postgres + the object store (the stack's document subset) and:
 //
 //	DOCUMENT_STORE_DSN=postgres://document_public:PW@localhost:5432/authbyte?sslmode=disable \
 //	S3_ENDPOINT=localhost:9000 S3_ACCESS_KEY=... S3_SECRET_KEY=... S3_USE_SSL=false \
@@ -43,14 +43,14 @@ import (
 	"github.com/signbyte/document-store/store"
 )
 
-// liveBackends wires the real Postgres store, MinIO blob store, and local KMS
+// liveBackends wires the real Postgres store, the S3 blob store, and local KMS
 // from the environment, skipping the whole test when DOCUMENT_STORE_DSN is unset.
 func liveBackends(t *testing.T) (store.Store, s3.Store, kms.KMS) {
 	t.Helper()
 
 	dsn := os.Getenv("DOCUMENT_STORE_DSN")
 	if dsn == "" {
-		t.Skip("DOCUMENT_STORE_DSN unset — bring up the postgres+minio document subset to run this live data-plane smoke")
+		t.Skip("DOCUMENT_STORE_DSN unset — bring up the postgres + object-store document subset to run this live data-plane smoke")
 	}
 	ctx := context.Background()
 
@@ -75,7 +75,7 @@ func liveBackends(t *testing.T) (store.Store, s3.Store, kms.KMS) {
 		t.Fatalf("s3.New: %v", err)
 	}
 	if err := blob.Ping(ctx); err != nil {
-		t.Fatalf("minio ping (bucket %q reachable?): %v", os.Getenv("S3_BUCKET"), err)
+		t.Fatalf("object store ping (bucket %q reachable?): %v", os.Getenv("S3_BUCKET"), err)
 	}
 
 	// Use the configured master key when present (faithful), else an ephemeral
@@ -95,7 +95,7 @@ func liveBackends(t *testing.T) (store.Store, s3.Store, kms.KMS) {
 	return st, blob, k
 }
 
-func TestPhaseB_DataPlane_LivePGAndMinIO(t *testing.T) {
+func TestPhaseB_DataPlane_LivePGAndS3(t *testing.T) {
 	st, blob, k := liveBackends(t)
 	defer st.Close()
 
@@ -108,7 +108,7 @@ func TestPhaseB_DataPlane_LivePGAndMinIO(t *testing.T) {
 	var sourceID, containerID string
 	var containerBytes []byte
 
-	t.Run("upload: ingest computes canonical SHA-256, envelope-encrypts to MinIO, inserts the row", func(t *testing.T) {
+	t.Run("upload: ingest computes canonical SHA-256, envelope-encrypts to the object store, inserts the row", func(t *testing.T) {
 		doc, err := svc.Ingest(ctx, IngestInput{Owner: owner, Filename: "contract.txt", Mime: "text/plain", Data: docBytes})
 		if err != nil {
 			t.Fatalf("Ingest source: %v", err)
@@ -132,7 +132,7 @@ func TestPhaseB_DataPlane_LivePGAndMinIO(t *testing.T) {
 		}
 	})
 
-	t.Run("encrypt round-trip: MinIO fetch → KMS unwrap → AES-GCM open returns the original bytes", func(t *testing.T) {
+	t.Run("encrypt round-trip: object-store fetch → KMS unwrap → AES-GCM open returns the original bytes", func(t *testing.T) {
 		_, got, err := svc.Content(ctx, sourceID, store.Caller{Sub: owner})
 		if err != nil {
 			t.Fatalf("Content: %v", err)
@@ -206,11 +206,11 @@ func TestPhaseB_DataPlane_LivePGAndMinIO(t *testing.T) {
 			t.Fatalf("Content container: %v", err)
 		}
 		if !bytes.Equal(got, containerBytes) {
-			t.Fatal("container bytes did not round-trip through MinIO + KMS")
+			t.Fatal("container bytes did not round-trip through the object store + KMS")
 		}
 	})
 
-	t.Run("TTL sweep: document.sweep_retention expires the row, NULLs refs, purges the MinIO object", func(t *testing.T) {
+	t.Run("TTL sweep: document.sweep_retention expires the row, NULLs refs, purges the stored object", func(t *testing.T) {
 		// A service whose TTL is already in the past → its ingest is born expired.
 		expSvc := New(st, blob, k, -time.Second)
 		ex, err := expSvc.Ingest(ctx, IngestInput{Owner: owner, Filename: "ephemeral.txt", Data: []byte("expire me")})
