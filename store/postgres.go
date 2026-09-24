@@ -109,12 +109,17 @@ func (p *Postgres) call(ctx context.Context, proc string, in any) (json.RawMessa
 // Insert persists a metadata row via document.insert.
 func (p *Postgres) Insert(ctx context.Context, in InsertInput) (string, error) {
 	body := map[string]any{
-		"owner":           in.Owner,
-		"content_hash":    in.ContentHash,
-		"mime":            in.Mime,
-		"size":            in.Size,
-		"retention_until": in.RetentionUntil.UTC().Format(time.RFC3339Nano),
+		"owner":        in.Owner,
+		"content_hash": in.ContentHash,
+		"mime":         in.Mime,
+		"size":         in.Size,
 	}
+	// Omitted entirely when there is no date, which is how a durable document
+	// stored with none reaches the database as a real absence rather than as some
+	// stand-in instant.
+	putTime(body, "retention_until", in.RetentionUntil)
+	putOpt(body, "owner_kind", in.OwnerKind)
+	putOpt(body, "retention_class", in.RetentionClass)
 	putOpt(body, "tenant_id", in.TenantID)
 	putOpt(body, "kind", in.Kind)
 	putOpt(body, "parent_id", in.ParentID)
@@ -266,7 +271,7 @@ func (p *Postgres) Grant(ctx context.Context, in GrantInput) error {
 // Get reads one document the caller may read via document.get (ACL-authorized).
 func (p *Postgres) Get(ctx context.Context, id string, caller Caller) (*Document, error) {
 	body := map[string]any{"id": id, "caller_sub": caller.Sub}
-	putOpt(body, "caller_serial", caller.Serial)
+	putCaller(body, caller)
 
 	data, err := p.call(ctx, "document.get", body)
 	if err != nil {
@@ -285,7 +290,7 @@ func (p *Postgres) Get(ctx context.Context, id string, caller Caller) (*Document
 // document.get_container_by_parent (ACL-authorized like Get).
 func (p *Postgres) GetContainerByParent(ctx context.Context, parentID string, caller Caller) (*Document, error) {
 	body := map[string]any{"parent_id": parentID, "caller_sub": caller.Sub}
-	putOpt(body, "caller_serial", caller.Serial)
+	putCaller(body, caller)
 
 	data, err := p.call(ctx, "document.get_container_by_parent", body)
 	if err != nil {
@@ -304,7 +309,7 @@ func (p *Postgres) GetContainerByParent(ctx context.Context, parentID string, ca
 // document.get_latest_signed_pdf_by_chain (ACL-authorized like Get).
 func (p *Postgres) GetLatestSignedPdfByChain(ctx context.Context, parentID string, caller Caller) (*Document, error) {
 	body := map[string]any{"parent_id": parentID, "caller_sub": caller.Sub}
-	putOpt(body, "caller_serial", caller.Serial)
+	putCaller(body, caller)
 
 	data, err := p.call(ctx, "document.get_latest_signed_pdf_by_chain", body)
 	if err != nil {
@@ -322,7 +327,7 @@ func (p *Postgres) GetLatestSignedPdfByChain(ctx context.Context, parentID strin
 // List returns the documents the caller may read via document.list (ACL-scoped).
 func (p *Postgres) List(ctx context.Context, caller Caller, limit int, after string) ([]*Document, error) {
 	body := map[string]any{"caller_sub": caller.Sub}
-	putOpt(body, "caller_serial", caller.Serial)
+	putCaller(body, caller)
 	if limit > 0 {
 		body["limit"] = limit
 	}
@@ -347,7 +352,7 @@ func (p *Postgres) List(ctx context.Context, caller Caller, limit int, after str
 // (ACL-scoped like List).
 func (p *Postgres) ListChains(ctx context.Context, caller Caller, limit int, after string, includeExpired bool) ([]*Chain, error) {
 	body := map[string]any{"caller_sub": caller.Sub}
-	putOpt(body, "caller_serial", caller.Serial)
+	putCaller(body, caller)
 	if limit > 0 {
 		body["limit"] = limit
 	}
@@ -376,7 +381,7 @@ func (p *Postgres) ListChains(ctx context.Context, caller Caller, limit int, aft
 // answer).
 func (p *Postgres) GetChain(ctx context.Context, caller Caller, id string) (*Chain, error) {
 	body := map[string]any{"caller_sub": caller.Sub, "id": id}
-	putOpt(body, "caller_serial", caller.Serial)
+	putCaller(body, caller)
 
 	data, err := p.call(ctx, "document.get_chain", body)
 	if err != nil {
@@ -502,7 +507,7 @@ func (p *Postgres) ExtendRetention(ctx context.Context, id, caller string, until
 // was removed (empty otherwise).
 func (p *Postgres) RemoveAccess(ctx context.Context, docID string, caller Caller) ([]PurgedRef, error) {
 	body := map[string]any{"doc_id": docID, "caller_sub": caller.Sub}
-	putOpt(body, "caller_serial", caller.Serial)
+	putCaller(body, caller)
 
 	data, err := p.call(ctx, "document.remove_access", body)
 	if err != nil {
@@ -547,4 +552,20 @@ func putOpt(body map[string]any, key, val string) {
 	if val != "" {
 		body[key] = val
 	}
+}
+
+// putTime writes an instant only when there is one. A nil instant leaves the key
+// out, so the procedure sees no value at all rather than a zero one.
+func putTime(body map[string]any, key string, val *time.Time) {
+	if val != nil {
+		body[key] = val.UTC().Format(time.RFC3339Nano)
+	}
+}
+
+// putCaller adds the principal a service call acts as, when it acts as one. Both
+// halves come from the token, so a request can never name either.
+func putCaller(body map[string]any, caller Caller) {
+	putOpt(body, "caller_serial", caller.Serial)
+	putOpt(body, "caller_product", caller.Product)
+	putOpt(body, "caller_tenant", caller.Tenant)
 }

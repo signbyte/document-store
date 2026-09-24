@@ -14,6 +14,11 @@ type Ingested struct {
 	Mime              string `json:"mime"`
 	Size              int64  `json:"size"`
 	PreservationClass string `json:"preservationClass"`
+	// RetentionClass echoes which retention the document was stored under —
+	// "ttl" (the service dates it) or "durable" (its owner does) — so a caller
+	// that asked for durable storage can see that it got it, in the same
+	// response, rather than reading the document back to find out.
+	RetentionClass string `json:"retentionClass"`
 	// HasSignatures reports a structural detection only (a signature dictionary
 	// exists), not a cryptographic verification — the caller decides what to do
 	// with an already-signed upload (surface it, route to validation, ignore it).
@@ -23,19 +28,23 @@ type Ingested struct {
 // Document is the metadata projection returned by GET /api/v1/documents/{id} and
 // in listings. It never carries the storage_ref / encryption_key_ref (internal).
 type Document struct {
-	ID                string    `json:"id"`
-	Owner             string    `json:"owner"`
-	TenantID          string    `json:"tenantId,omitempty"`
-	Kind              string    `json:"kind"`
-	ParentID          string    `json:"parentId,omitempty"`
-	Filename          string    `json:"filename,omitempty"`
-	ContentHash       string    `json:"contentHash"`
-	Mime              string    `json:"mime"`
-	Size              int64     `json:"size"`
-	Status            string    `json:"status"`
-	PreservationClass string    `json:"preservationClass"`
-	RetentionUntil    time.Time `json:"retentionUntil"`
-	LegalHold         bool      `json:"legalHold"`
+	ID                string `json:"id"`
+	Owner             string `json:"owner"`
+	TenantID          string `json:"tenantId,omitempty"`
+	Kind              string `json:"kind"`
+	ParentID          string `json:"parentId,omitempty"`
+	Filename          string `json:"filename,omitempty"`
+	ContentHash       string `json:"contentHash"`
+	Mime              string `json:"mime"`
+	Size              int64  `json:"size"`
+	Status            string `json:"status"`
+	PreservationClass string `json:"preservationClass"`
+	RetentionClass    string `json:"retentionClass"`
+	// RetentionUntil is null when nothing is scheduled to remove the document.
+	// It is rendered rather than omitted, because "no date" is a fact about the
+	// document and a missing field would read as "not told".
+	RetentionUntil *time.Time `json:"retentionUntil"`
+	LegalHold      bool       `json:"legalHold"`
 	// InnerFiles lists a container's data objects (name/type/size) for "what's
 	// inside" — empty for a plain source. No bytes; extracted only on demand.
 	InnerFiles []InnerFile `json:"innerFiles,omitempty"`
@@ -74,6 +83,7 @@ func FromStore(d *store.Document) Document {
 		Size:              d.Size,
 		Status:            d.Status,
 		PreservationClass: d.PreservationClass,
+		RetentionClass:    d.RetentionClass,
 		RetentionUntil:    d.RetentionUntil,
 		LegalHold:         d.LegalHold,
 		InnerFiles:        inner,
@@ -95,18 +105,18 @@ type DocumentList struct {
 // reports the head was produced by a signing here rather than being the upload
 // itself; ChainCreatedAt is when the chain started.
 type Chain struct {
-	ChainRootID       string    `json:"chainRootId"`
-	ID                string    `json:"id"`
-	Kind              string    `json:"kind"`
-	Status            string    `json:"status"`
-	Filename          string    `json:"filename,omitempty"`
-	Mime              string    `json:"mime"`
-	Size              int64     `json:"size"`
-	RetentionUntil    time.Time `json:"retentionUntil"`
-	LegalHold         bool      `json:"legalHold"`
-	PreservationClass string    `json:"preservationClass"` // none|b_lt|preservation — 'preservation' once archive-timestamped (B-LTA)
-	HasSignatures     bool      `json:"hasSignatures"`
-	PlatformSigned    bool      `json:"platformSigned"`
+	ChainRootID       string     `json:"chainRootId"`
+	ID                string     `json:"id"`
+	Kind              string     `json:"kind"`
+	Status            string     `json:"status"`
+	Filename          string     `json:"filename,omitempty"`
+	Mime              string     `json:"mime"`
+	Size              int64      `json:"size"`
+	RetentionUntil    *time.Time `json:"retentionUntil"`
+	LegalHold         bool       `json:"legalHold"`
+	PreservationClass string     `json:"preservationClass"` // none|b_lt|preservation — 'preservation' once archive-timestamped (B-LTA)
+	HasSignatures     bool       `json:"hasSignatures"`
+	PlatformSigned    bool       `json:"platformSigned"`
 	// ResultFrozen: a signing workflow over the chain is in progress — the
 	// signed result is download-locked until its terminal transition, and a
 	// listing consumer renders the row as in-signing.

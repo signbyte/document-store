@@ -64,13 +64,23 @@ type IngestInput struct {
 	Mime              string
 	PreservationClass string
 	Status            string // "" → received (source) ; callers set "signed" for containers
-	Data              []byte
+	// OwnerKind is "sub" (a person, the default) or "product". A product owner
+	// needs TenantID — the organisation is half of who owns the document.
+	OwnerKind string
+	// RetentionClass is "ttl" (the default) or "durable". Under "ttl" this
+	// service dates the document itself, as it always has. Under "durable" the
+	// date is the owner's: RetentionUntil as given, nil included, and nil means
+	// nothing removes the document until the owner does.
+	RetentionClass string
+	RetentionUntil *time.Time
+	Data           []byte
 }
 
 // Ingest computes the canonical hash, envelope-encrypts the bytes (fresh per-object
 // data key, KMS-wrapped), stores the ciphertext in S3, and persists the metadata
-// row with retention_until = now + ttl. On a metadata failure the orphan blob is
-// cleaned up.
+// row. A document stored under the default class is dated here, as it always has
+// been (retention_until = now + ttl); a durable one carries whatever date its owner
+// gave, including none at all. On a metadata failure the orphan blob is cleaned up.
 //
 // Detection of an uploaded ALREADY-SIGNED file (kind override) is the caller's
 // concern: the user-facing upload route runs the document gate on the raw
@@ -132,7 +142,9 @@ func (s *Service) Ingest(ctx context.Context, in IngestInput) (*store.Document, 
 		Status:            in.Status,
 		EncryptionKeyRef:  base64.StdEncoding.EncodeToString(wrapped),
 		PreservationClass: in.PreservationClass,
-		RetentionUntil:    time.Now().Add(s.ttl),
+		OwnerKind:         in.OwnerKind,
+		RetentionClass:    in.RetentionClass,
+		RetentionUntil:    s.retentionFor(in),
 		InnerFiles:        innerFiles,
 	})
 	if err != nil {
@@ -146,7 +158,30 @@ func (s *Service) Ingest(ctx context.Context, in IngestInput) (*store.Document, 
 	// carries its creator's seeded sub ACL; a first container inherits the chain root's
 	// ACL, where a co-signer signing first is granted by serial, not by sub — so without
 	// the serial the co-signer could not read back the container they just created.
-	return s.store.Get(ctx, id, store.Caller{Sub: in.Owner, Serial: in.Serial})
+	//
+	// A product-owned row is seeded onto the PRODUCT, so the read-back has to present
+	// the same principal: handing the product's own id over as a subject matches
+	// nothing, and the upload would answer "not found" for a document it just stored.
+	caller := store.Caller{Sub: in.Owner, Serial: in.Serial}
+	if in.OwnerKind == store.PrincipalProduct {
+		caller = store.Caller{Product: in.Owner, Tenant: in.TenantID}
+	}
+
+	return s.store.Get(ctx, id, caller)
+}
+
+// retentionFor decides the date a new row carries. The service owns the clock for
+// the default class and always has; under the durable class the date belongs to the
+// owner, so whatever it gave is used verbatim — nil included, which is what makes a
+// document nothing sweeps.
+func (s *Service) retentionFor(in IngestInput) *time.Time {
+	if in.RetentionClass == store.RetentionDurable {
+		return in.RetentionUntil
+	}
+
+	until := time.Now().Add(s.ttl)
+
+	return &until
 }
 
 // BundleEntry names one member of a rebundled set, in final order: either an

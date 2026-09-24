@@ -3,6 +3,112 @@
 Notable changes to this service, newest first, per release. This file is written for whoever
 runs the service or integrates against it.
 
+## v0.1.3
+
+### Added — a document can be stored until its owner releases it, owned by a product
+
+`POST /api/v1/documents` accepts **`retention_class`**: `ttl` (the default, and byte for byte what this
+route did before) or `durable`. A durable document is owned by the **product** that stored it, acting for
+one organisation, and nothing removes it until that product deletes it.
+
+```http
+POST /api/v1/documents
+Content-Type: multipart/form-data; boundary=--b
+
+----b
+Content-Disposition: form-data; name="file"; filename="drawing-rev-c.pdf"
+Content-Type: application/pdf
+
+%PDF-1.7…
+----b
+Content-Disposition: form-data; name="retention_class"
+
+durable
+----b--
+```
+
+```json
+{
+  "id": "01K5C8Q7YQ4ZB0W5M2TJ7H9N3R",
+  "contentHash": "n4bQgYhMfWWaL+qgxVrQFaO/TxsrC4Is0V1sFbDwCgg=",
+  "mime": "application/pdf",
+  "size": 184320,
+  "preservationClass": "none",
+  "retentionClass": "durable",
+  "hasSignatures": false
+}
+```
+
+Reading it back now carries both fields, and `retentionUntil` is **`null`** when nothing is scheduled to
+remove the document:
+
+```json
+{
+  "id": "01K5C8Q7YQ4ZB0W5M2TJ7H9N3R",
+  "owner": "product:example:01K3YB8N7QW4T2MJ6RX5D0C9AF",
+  "tenantId": "01K3YB8N7QW4T2MJ6RX5D0C9AF",
+  "retentionClass": "durable",
+  "retentionUntil": null,
+  "legalHold": false
+}
+```
+
+**Three things have to be true to store one**, and each has its own refusal:
+
+| | |
+|---|---|
+| the token holds the new **`documents:durable`** scope | else `403 err:document:forbidden` |
+| the token names an **organisation** (the `tenant` claim) | else `403 err:document:forbidden` |
+| the client is listed in **`DOCUMENT_PRODUCT_CLIENTS`** | else `403 err:document:forbidden` |
+
+`documents:write` keeps its present meaning, so nothing that exists today moves. The separate scope
+exists because storing a document no clock removes should be a grant somebody makes deliberately, not
+something every uploader silently holds.
+
+### Added — an owner may bound how long it keeps a document
+
+`durable` does **not** mean *no date ever* — it means *the owner decides the date*. An organisation whose
+own data-protection policy says "one year" passes `retention_until` (RFC3339) alongside
+`retention_class=durable`, and **that date is enforced**: the same sweep that removes an expiring
+document removes a durable one once its own date passes. A retention limit that depended on the caller
+coming back to act on it would be a promise, not a control.
+
+A date that is already in the past is refused (`400 err:document:invalidRetentionUntil`) rather than
+stored — under an enforced date it would mean *delete at the next sweep*. A date sent without
+`retention_class=durable` is refused the same way, instead of being silently ignored. An unknown class is
+`400 err:document:invalidRetentionClass`.
+
+### Added — `DOCUMENT_PRODUCT_CLIENTS`
+
+Which service clients may own documents, as `client=product` pairs:
+
+```
+DOCUMENT_PRODUCT_CLIENTS=svc:example-documents=example
+```
+
+The **product** is what is recorded as the owner, not the client id, so rotating or renaming that
+credential leaves every document it stored still owned and still releasable. A client that is not listed
+cannot store a product-owned document, whatever scopes it holds. Unset, nothing changes for anyone.
+
+### Changed — a product-owned document is invisible outside its own organisation
+
+A read, a byte fetch or a delete of a product-owned document answers **`404 err:document:notFound`** to
+another organisation's identity, to a person's token, and to any client that is not its owner — with the
+same body a document that was never stored gets, down to the field. A `403` there would confirm the id
+exists.
+
+Release is the owning product's own `DELETE /api/v1/documents/{id}`: bytes destroyed, row terminal, and
+`409 err:document:legalHold` still refuses under hold. **Who among an organisation's people may delete an
+attachment is the calling product's decision, not this service's** — this service authorizes the product
+and knows nothing about a product's own roles.
+
+### Changed — `retentionUntil` can be null in every document response
+
+`GET /api/v1/documents/{id}` and the listing render `"retentionUntil": null` for a document with no date
+scheduled. The field is present and null rather than omitted, because "no date" is a fact about the
+document and a missing field reads as "not told". An integrator that parses it as a required instant
+needs to accept null.
+
 ## v0.1.2
 
 ### Changed — a chain grant is stored in one canonical spelling of the identity code

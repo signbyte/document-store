@@ -21,6 +21,9 @@ func TestApp(tb testing.TB) *App {
 	tb.Setenv("ENVIRONMENT", "development")
 	tb.Setenv("AUTH_ISSUER_URL", "http://localhost:8080")
 	tb.Setenv("SERVICE_AUDIENCE", "svc:document")
+	// One client is allowed to own documents, so the product-owned path is
+	// reachable in tests exactly as a deployment configures it.
+	tb.Setenv("DOCUMENT_PRODUCT_CLIENTS", "svc:test-product-client=testproduct")
 
 	app, err := New(nil, "0.0.0-test")
 	qt.Assert(tb, qt.IsNil(err))
@@ -58,6 +61,11 @@ func TestAuthMiddleware() azugo.RequestHandlerFunc {
 			// Optional eIDAS serial — the ACL matches an invited co-signer on it.
 			if serial := ctx.Header.Get("X-Test-Serial"); serial != "" {
 				claims["serial_number"] = token.ClaimStrings{serial}
+			}
+			// Optional organisation — a service account that is also a member of
+			// one carries it, and a product-owned document is scoped by it.
+			if tenant := ctx.Header.Get("X-Test-Tenant"); tenant != "" {
+				claims["tenant"] = token.ClaimStrings{tenant}
 			}
 			ctx.SetUser(user.New(claims))
 			next(ctx)
