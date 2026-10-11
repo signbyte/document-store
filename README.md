@@ -12,7 +12,7 @@ Metadata lives in one PostgreSQL schema reached **only** through `SECURITY DEFIN
 
 ## Where it sits
 
-`document-store` is one service in a small signing fleet. It is the only service that holds document bytes; every neighbour that needs bytes or a digest fetches them here over the authenticated API, under an on-behalf delegated token. It shares one PostgreSQL and one object store (S3-API: MinIO / Scality) with its siblings, and wraps per-object data keys through a KMS.
+`document-store` is one service in a small signing fleet. It is the only service that holds document bytes; every neighbour that needs bytes or a digest fetches them here over the authenticated API, under an on-behalf delegated token. It shares one PostgreSQL and one object store (any S3-API store, e.g. RustFS or Scality) with its siblings, and wraps per-object data keys through a KMS.
 
 ```mermaid
 flowchart LR
@@ -25,7 +25,7 @@ flowchart LR
         PG[(PostgreSQL<br/>document metadata + ACL<br/>— NO bytes)]
     end
 
-    OBJ[("object store<br/>S3-API (MinIO / Scality)<br/>envelope-encrypted blobs")]
+    OBJ[("object store<br/>S3-API (e.g. RustFS / Scality)<br/>envelope-encrypted blobs")]
     KMS["KMS<br/>wraps per-object data keys"]
     SIGNER["signer<br/>(byte-free / hash-only)"]
 
