@@ -173,6 +173,8 @@ func (c *Configuration) Bind(_ string, v *viper.Viper) {
 	// Dev-only user-token concession (off by default).
 
 	// Metadata store.
+	// The connection string carries the role's password: DOCUMENT_STORE_DSN_FILE.
+	loadSecret(v, "document_store_dsn", "DOCUMENT_STORE_DSN")
 	_ = v.BindEnv("document_store_dsn", "DOCUMENT_STORE_DSN")
 	_ = v.BindEnv("max_file_bytes", "MAX_FILE_BYTES")
 	_ = v.BindEnv("document_retention_ttl", "DOCUMENT_RETENTION_TTL")
@@ -181,6 +183,7 @@ func (c *Configuration) Bind(_ string, v *viper.Viper) {
 
 	// S3 blob store.
 	v.SetDefault("s3_use_ssl", false)
+	loadSecret(v, "s3_access_key", "S3_ACCESS_KEY")
 	loadSecret(v, "s3_secret_key", "S3_SECRET_KEY")
 	_ = v.BindEnv("s3_endpoint", "S3_ENDPOINT")
 	_ = v.BindEnv("s3_access_key", "S3_ACCESS_KEY")
@@ -219,6 +222,9 @@ func (c *Configuration) Bind(_ string, v *viper.Viper) {
 
 // Validate validates the full configuration tree.
 func (c *Configuration) Validate(valid *validation.Validate) error {
+	if err := refuseEmptyFileSecret("DOCUMENT_STORE_DSN", c.StoreDSN); err != nil {
+		return err
+	}
 	if err := c.BaseConfiguration.Validate(valid); err != nil {
 		return err
 	}
