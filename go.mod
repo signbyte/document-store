@@ -8,8 +8,8 @@ require (
 	github.com/gmb-lib/go-asice v1.6.4
 	github.com/gmb-lib/go-authbyte v0.32.0
 	github.com/gmb-lib/go-docgate v1.0.6
-	github.com/gmb-lib/go-gdpr-audit v1.1.7
-	github.com/gmb-lib/go-platform-kit v1.11.5
+	github.com/gmb-lib/go-gdpr-audit v1.1.8
+	github.com/gmb-lib/go-platform-kit v1.11.6
 	github.com/gmb-lib/go-sec-events v1.2.3
 	github.com/go-quicktest/qt v1.102.0
 	github.com/jackc/pgx/v5 v5.11.0
