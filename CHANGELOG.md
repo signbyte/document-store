@@ -3,6 +3,33 @@
 Notable changes to this service, newest first, per release. This file is written for whoever
 runs the service or integrates against it.
 
+## v0.1.5
+
+### Security
+
+- **Access records and correlation ids keep their own request's values** (`go-gdpr-audit` v1.1.8, `go-platform-kit`
+  v1.11.6). An access record queued while the access audit was unreachable, and the correlation id carried on
+  traces, audit records and background calls, could name another request's document, person or id. Both libraries
+  now keep copies of their own.
+
+### Fixed
+
+- **`DOCUMENT_STORE_DSN_FILE` now works.** The README said the connection string supported the `_FILE`
+  convention, but the service read only the plain setting. It now reads the file when `DOCUMENT_STORE_DSN` is not
+  set; a set `DOCUMENT_STORE_DSN` still wins. If the file is named but missing or empty, the service refuses to start
+  instead of falling back to the non-durable in-memory store.
+
+### Added
+
+- **`S3_ACCESS_KEY_FILE`.** The blob store's access key, half of its credential, can be read from a file as the secret
+  key already could.
+
+### Changed
+
+- **Libraries updated, and the service now builds with Go 1.27.3:** azugo v0.40.2, go-authbyte v0.32.0,
+  go-gdpr-audit v1.1.8, go-platform-kit v1.11.6 and go-sec-events v1.2.3, with the other dependencies at their
+  current releases. Nothing about the API, the configuration or the database changes.
+
 ## v0.1.4
 
 A security release. **The service now builds with Go 1.27.2**, and its libraries move to their Go

@@ -249,7 +249,7 @@ Standard fleet env (`SERVER_URLS`, `SERVICE_NAME`, `ENVIRONMENT`, `LOG_*`, `METR
 | `DOCUMENT_RETENTION_SWEEP_INTERVAL` | `15m` | Retention sweep cadence |
 | `DOCUMENT_RETENTION_SWEEP_BATCH` | `500` | Rows purged per sweep batch |
 | `DOCUMENT_HISTORY_RETENTION` | `2160h` (90 days) | How long a terminal chain's metadata record stays readable as history after its bytes are destroyed; the sweep erases older records (data minimisation). **`0` disables the erasure**, so history is kept indefinitely — a deliberate choice, not a safe default |
-| `S3_ENDPOINT` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_USE_SSL` / `S3_BUCKET` / `S3_PREFIX` | — | S3-API blob store. `S3_ENDPOINT` + `S3_BUCKET` unset ⇒ in-memory blob store (development only). `S3_SECRET_KEY` supports the `_FILE` convention |
+| `S3_ENDPOINT` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_USE_SSL` / `S3_BUCKET` / `S3_PREFIX` | — | S3-API blob store. `S3_ENDPOINT` + `S3_BUCKET` unset ⇒ in-memory blob store (development only). `S3_ACCESS_KEY` and `S3_SECRET_KEY` support the `_FILE` convention |
 | `DOCUMENT_KMS_MASTER_KEY` | — | base64 32-byte AES-256 master key (dev local KMS). Unset ⇒ ephemeral dev key. Supports the `_FILE` convention |
 | `SERVICE_CLIENT_ID` / `SERVICE_CLIENT_SECRET` | `svc:document` / — | Outbound DPoP service-client identity (the audit poster). `SERVICE_CLIENT_SECRET` supports the `_FILE` convention |
 | `AUDIT_ISSUER_URL` | — | In-network token-mint address for outbound calls (the `iss` stays `AUTH_ISSUER_URL`) |
