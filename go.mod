@@ -1,6 +1,6 @@
 module github.com/signbyte/document-store
 
-go 1.27.3
+go 1.27.4
 
 require (
 	azugo.io/azugo v0.40.2
