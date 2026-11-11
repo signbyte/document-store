@@ -38,14 +38,31 @@ func TestAccessAuditEnabled(t *testing.T) {
 	}
 }
 
-func TestOutboundEnabledMirrorsAccessAudit(t *testing.T) {
-	c := &Configuration{}
-	if c.OutboundEnabled() != c.AccessAuditEnabled() {
-		t.Fatal("OutboundEnabled() must mirror AccessAuditEnabled()")
+func TestOutboundEnabledForTheAccessAuditOrTheMembershipRegister(t *testing.T) {
+	cases := []struct {
+		name       string
+		audit      string
+		membership string
+		want       bool
+	}{
+		{"neither", "", "", false},
+		{"the access audit only", "http://access-audit.local", "", true},
+		{"the membership register only", "", "http://membership.local", true},
+		{"both", "http://access-audit.local", "http://membership.local", true},
 	}
-	c.AccessAuditURL = "http://access-audit.local"
-	if !c.OutboundEnabled() {
-		t.Fatal("OutboundEnabled() = false once access-audit is configured")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &Configuration{AccessAuditURL: tc.audit, MembershipURL: tc.membership}
+			if got := c.OutboundEnabled(); got != tc.want {
+				t.Fatalf("OutboundEnabled() = %v, want %v", got, tc.want)
+			}
+			if got := c.AccessAuditEnabled(); got != (tc.audit != "") {
+				t.Fatalf("AccessAuditEnabled() = %v with ACCESS_AUDIT_URL %q", got, tc.audit)
+			}
+			if got := c.MembershipEnabled(); got != (tc.membership != "") {
+				t.Fatalf("MembershipEnabled() = %v with MEMBERSHIP_URL %q", got, tc.membership)
+			}
+		})
 	}
 }
 

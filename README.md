@@ -76,11 +76,15 @@ Everything below `/api/v1` is behind DPoP service-token authentication (audience
 
 Scope levels: `read` covers metadata / content / digest / listing; `write` covers ingest / complete / assemble / add-signature / signed / delete; `grant` is the workflow service's chain-invitation right.
 
+### Declaring the levels to a membership register
+
+A deployment that runs a membership register can have the service declare itself there at start: its service key `document-store`, its display name and its four levels (`documents:read`, `documents:write`, `documents:grant`, `documents:durable`, each with a one-sentence description). Set `MEMBERSHIP_URL` and `MEMBERSHIP_AUDIENCE` (see Configuration). The deployment's registry must grant the service's client the scope `declare:document-store` toward the register's audience. The declaration is sent in the background: it never delays or stops the start. A refusal is logged as an error and tried again a minute later; an accepted declaration is sent again every hour. With `MEMBERSHIP_URL` unset the service does nothing of the kind.
+
 ---
 
 ## Architecture
 
-One application container (`App` in `app.go`) wires every dependency at startup: the metadata store, the encrypted byte store, the KMS, the domain service, inbound DPoP auth, the three audit regimes, the domain-event publisher, and the retention sweep task. Each backend has an interface seam with a production implementation and an in-memory development fallback — so the same binary runs against real PostgreSQL + S3 + KMS in the fleet, or fully in-process for tests with no Docker or network.
+One application container (`App` in `app.go`) wires every dependency at startup: the metadata store, the encrypted byte store, the KMS, the domain service, inbound DPoP auth, the three audit regimes, the domain-event publisher, the retention sweep task, and, when a membership register is configured, the task that declares the service's levels to it. Each backend has an interface seam with a production implementation and an in-memory development fallback — so the same binary runs against real PostgreSQL + S3 + KMS in the fleet, or fully in-process for tests with no Docker or network.
 
 ```mermaid
 flowchart TB
@@ -251,10 +255,11 @@ Standard fleet env (`SERVER_URLS`, `SERVICE_NAME`, `ENVIRONMENT`, `LOG_*`, `METR
 | `DOCUMENT_HISTORY_RETENTION` | `2160h` (90 days) | How long a terminal chain's metadata record stays readable as history after its bytes are destroyed; the sweep erases older records (data minimisation). **`0` disables the erasure**, so history is kept indefinitely — a deliberate choice, not a safe default |
 | `S3_ENDPOINT` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_USE_SSL` / `S3_BUCKET` / `S3_PREFIX` | — | S3-API blob store. `S3_ENDPOINT` + `S3_BUCKET` unset ⇒ in-memory blob store (development only). `S3_ACCESS_KEY` and `S3_SECRET_KEY` support the `_FILE` convention |
 | `DOCUMENT_KMS_MASTER_KEY` | — | base64 32-byte AES-256 master key (dev local KMS). Unset ⇒ ephemeral dev key. Supports the `_FILE` convention |
-| `SERVICE_CLIENT_ID` / `SERVICE_CLIENT_SECRET` | `svc:document` / — | Outbound DPoP service-client identity (the audit poster). `SERVICE_CLIENT_SECRET` supports the `_FILE` convention |
-| `AUDIT_ISSUER_URL` | — | In-network token-mint address for outbound calls (the `iss` stays `AUTH_ISSUER_URL`) |
+| `SERVICE_CLIENT_ID` / `SERVICE_CLIENT_SECRET` | `svc:document` / — | Outbound DPoP service-client identity (the audit poster and the declaration to the membership register). `SERVICE_CLIENT_SECRET` supports the `_FILE` convention |
+| `AUDIT_ISSUER_URL` | — | The address the service asks its own tokens at, for either outbound use (the access audit or the membership register); unset ⇒ `AUTH_ISSUER_URL`. The `iss` stays `AUTH_ISSUER_URL` |
 | `ACCESS_AUDIT_URL` / `ACCESS_AUDIT_AUDIENCE` / `ACCESS_AUDIT_SCOPE` | — / `svc:access-audit` / `access-audit:write` | GDPR personal-data-access audit sink; off until the URL is set |
 | `ACCESS_AUDIT_OUTBOX_DIR` | — | Optional durable outbox directory for audit records |
+| `MEMBERSHIP_URL` / `MEMBERSHIP_AUDIENCE` | — / — | A membership register to declare the service's key and levels to at start; off until the URL is set. The service refuses to start when the URL is set and `MEMBERSHIP_AUDIENCE` is empty (the audience the register's tokens are asked for), or when it is set and `SERVICE_CLIENT_SECRET` is empty |
 | `CLAMAV_ENDPOINT` | — | Optional clamd `host:port` for a malware scan on user-facing uploads (INSTREAM, after the document gate; `422 err:document:infectedUpload` on FOUND). Unset ⇒ the scan is skipped entirely; an unreachable scanner fails open with a warning |
 | `DOCUMENT_EVENTS_TOPIC` | `document.events` | Broker topic for `document.uploaded` / `document.deleted` domain events |
 
@@ -296,7 +301,7 @@ document-store/
 
 ## Development
 
-Standard Go module (`github.com/signbyte/document-store`, Go 1.26). Every dependency, including the `gmb-lib/*` modules, is public and fetched from the network at its pinned tag — no local `replace`, no vendoring, and nothing that needs credentials or a `GOPRIVATE` setting.
+Standard Go module (`github.com/signbyte/document-store`, Go 1.27). Every dependency, including the `gmb-lib/*` modules, is public and fetched from the network at its pinned tag — no local `replace`, no vendoring, and nothing that needs credentials or a `GOPRIVATE` setting.
 
 ```bash
 go mod tidy

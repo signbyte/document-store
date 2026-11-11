@@ -45,7 +45,7 @@ import (
 // @resource Documents
 // @route /api/v1/documents [post].
 func (r *router) ingest(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 	caller := callerID(ctx)
@@ -192,7 +192,7 @@ func (r *router) resolveRetention(ctx *azugo.Context, rclass string) (ownerKind,
 
 	// Storage that no clock removes is a grant somebody makes deliberately, not a
 	// property every uploader silently holds.
-	if !r.requireScope(ctx, "durable") {
+	if !r.requireScope(ctx, LevelDurable) {
 		return "", "", "", nil, false
 	}
 
@@ -259,7 +259,7 @@ func (r *router) writeGateErr(ctx *azugo.Context, err error) {
 // @param includeExpired query bool false "chains view only: include chains whose head has expired"
 // @route /api/v1/documents [get].
 func (r *router) list(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "read") {
+	if !r.requireScope(ctx, LevelRead) {
 		return
 	}
 
@@ -313,7 +313,7 @@ func (r *router) list(ctx *azugo.Context) {
 // @operationId GetDocument
 // @route /api/v1/documents/{id} [get].
 func (r *router) getDocument(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "read") {
+	if !r.requireScope(ctx, LevelRead) {
 		return
 	}
 
@@ -334,7 +334,7 @@ func (r *router) getDocument(ctx *azugo.Context) {
 // @operationId GetDocumentDigest
 // @route /api/v1/documents/{id}/digest [get].
 func (r *router) getDigest(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "read") {
+	if !r.requireScope(ctx, LevelRead) {
 		return
 	}
 
@@ -354,7 +354,7 @@ func (r *router) getDigest(ctx *azugo.Context) {
 // @operationId GetDocumentContent
 // @route /api/v1/documents/{id}/content [get].
 func (r *router) getContent(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "read") {
+	if !r.requireScope(ctx, LevelRead) {
 		return
 	}
 	caller := callerID(ctx)
@@ -401,7 +401,7 @@ func (r *router) getContent(ctx *azugo.Context) {
 // @operationId DeleteDocument
 // @route /api/v1/documents/{id} [delete].
 func (r *router) deleteDocument(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 	caller := callerID(ctx)
@@ -447,7 +447,7 @@ type resultFreezeRequest struct {
 // @resource Documents
 // @route /api/v1/documents/{id}/result-freeze [post].
 func (r *router) resultFreeze(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "grant") {
+	if !r.requireScope(ctx, LevelGrant) {
 		return
 	}
 
@@ -487,7 +487,7 @@ func (r *router) resultFreeze(ctx *azugo.Context) {
 // @resource Documents
 // @route /api/v1/documents/{id}/retention [get].
 func (r *router) chainRetention(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "grant") {
+	if !r.requireScope(ctx, LevelGrant) {
 		return
 	}
 
@@ -539,7 +539,7 @@ func isConduit(ctx *azugo.Context) bool {
 // @resource Documents
 // @route /api/v1/documents/{id}/acl [post].
 func (r *router) grantACL(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "grant") {
+	if !r.requireScope(ctx, LevelGrant) {
 		return
 	}
 
@@ -611,7 +611,7 @@ func (r *router) grantACL(ctx *azugo.Context) {
 // @param container formData file true "The fileless.asice returned by LVRTC"
 // @route /api/v1/documents/{id}/complete [post].
 func (r *router) complete(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 	caller := callerID(ctx)
@@ -750,7 +750,7 @@ func (r *router) coSignInto(ctx *azugo.Context, caller string, contDoc *store.Do
 // @resource Documents
 // @route /api/v1/documents/{id}/head [get].
 func (r *router) chainHead(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "read") {
+	if !r.requireScope(ctx, LevelRead) {
 		return
 	}
 	root := ctx.Params.String("id")
@@ -803,7 +803,7 @@ func (r *router) chainHead(ctx *azugo.Context) {
 // @resource Documents
 // @route /api/v1/documents/{id}/chain [get].
 func (r *router) chain(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "read") {
+	if !r.requireScope(ctx, LevelRead) {
 		return
 	}
 
@@ -832,7 +832,7 @@ func (r *router) chain(ctx *azugo.Context) {
 // @resource Documents
 // @route /api/v1/documents/{id}/data-objects [get].
 func (r *router) dataObjects(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "read") {
+	if !r.requireScope(ctx, LevelRead) {
 		return
 	}
 
@@ -891,7 +891,7 @@ type bundleRequest struct {
 // @resource Documents
 // @route /api/v1/documents/bundle [post].
 func (r *router) bundle(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 	caller := callerID(ctx)
@@ -944,7 +944,7 @@ type rebundleRequest struct {
 // @resource Documents
 // @route /api/v1/documents/{id}/rebundle [post].
 func (r *router) rebundle(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 
@@ -996,7 +996,7 @@ func (r *router) rebundle(ctx *azugo.Context) {
 // @resource Documents
 // @route /api/v1/documents/{id}/data-objects/{name} [get].
 func (r *router) extractObject(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "read") {
+	if !r.requireScope(ctx, LevelRead) {
 		return
 	}
 	caller := callerID(ctx)
@@ -1073,7 +1073,7 @@ func (r *router) extractObject(ctx *azugo.Context) {
 // @param signatures formData file true "Detached XAdES signature(s)"
 // @route /api/v1/documents/assemble [post].
 func (r *router) assemble(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 	caller := callerID(ctx)
@@ -1115,7 +1115,7 @@ func (r *router) assemble(ctx *azugo.Context) {
 // @param signature formData file true "New detached XAdES signature (or fileless.asice)"
 // @route /api/v1/documents/{id}/add-signature [post].
 func (r *router) addSignature(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 	caller := callerID(ctx)
@@ -1191,7 +1191,7 @@ func (r *router) addSignature(ctx *azugo.Context) {
 // @resource Documents
 // @route /api/v1/documents/{id}/signed [post].
 func (r *router) storeSigned(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 	caller := callerID(ctx)
@@ -1399,7 +1399,7 @@ func (r *router) supersedeSignedPdf(ctx *azugo.Context, caller, chainRoot string
 // @resource Documents
 // @route /api/v1/documents/{id}/archived [post].
 func (r *router) storeArchived(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 	id := ctx.Params.String("id")
@@ -1455,7 +1455,7 @@ func (r *router) storeArchived(ctx *azugo.Context) {
 // @operationId ListHistory
 // @route /api/v1/history [get].
 func (r *router) listHistory(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "read") {
+	if !r.requireScope(ctx, LevelRead) {
 		return
 	}
 
@@ -1489,7 +1489,7 @@ func (r *router) listHistory(ctx *azugo.Context) {
 // @operationId DeleteHistoryRecord
 // @route /api/v1/history/{chainRoot} [delete].
 func (r *router) deleteHistory(ctx *azugo.Context) {
-	if !r.requireScope(ctx, "write") {
+	if !r.requireScope(ctx, LevelWrite) {
 		return
 	}
 

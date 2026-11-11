@@ -3,6 +3,28 @@
 Notable changes to this service, newest first, per release. This file is written for whoever
 runs the service or integrates against it.
 
+## v0.2.0
+
+### Added
+
+- **The service can declare its levels to a membership register.** A deployment that runs one sets
+  `MEMBERSHIP_URL` (the register's root address) and `MEMBERSHIP_AUDIENCE` (the audience its tokens are asked for);
+  at start the service then sends the register its service key `document-store`, its display name and its four levels
+  (`documents:read`, `write`, `grant` and `durable`), as itself, so the levels no longer have to be written into the
+  register by hand. The deployment's registry must grant the service's client the scope `declare:document-store`
+  toward the register's audience. The declaration is sent in the background and never delays or stops the start; a
+  refusal is logged as an error and tried again a minute later, and an accepted declaration is sent again every hour.
+  The service refuses to start when `MEMBERSHIP_URL` is set and `MEMBERSHIP_AUDIENCE` or `SERVICE_CLIENT_SECRET` is
+  empty. With `MEMBERSHIP_URL` unset nothing changes.
+- **`AUDIT_ISSUER_URL` serves both outbound uses.** It is the address the service asks its own tokens at, for the
+  access audit and for the membership register alike; unset, it is the issuer address as before. One outbound client
+  serves both uses and exists only when either is configured.
+
+### Changed
+
+- **Libraries updated:** go-authbyte v0.42.0. Which scope level a route requires does not change.
+- **Built with Go 1.27.4.**
+
 ## v0.1.5
 
 ### Security
