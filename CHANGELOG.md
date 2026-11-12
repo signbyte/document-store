@@ -11,8 +11,11 @@ runs the service or integrates against it.
   `MEMBERSHIP_URL` (the register's root address) and `MEMBERSHIP_AUDIENCE` (the audience its tokens are asked for);
   at start the service then sends the register its service key `document-store`, its display name and its four levels
   (`documents:read`, `write`, `grant` and `durable`), as itself, so the levels no longer have to be written into the
-  register by hand. The deployment's registry must grant the service's client the scope `declare:document-store`
-  toward the register's audience. The declaration is sent in the background and never delays or stops the start; a
+  register by hand. The service runs on go-authbyte v0.43.0, which asks the declaration's token for one more scope
+  per level group not named like the service key. Before running this release against a membership register, the
+  deployment's registry must grant the service's client the scopes `declare:document-store` and
+  `declare-group:documents` toward the register's audience; without the second, the token request is refused and
+  nothing is declared. The declaration is sent in the background and never delays or stops the start; a
   refusal is logged as an error and tried again a minute later, and an accepted declaration is sent again every hour.
   The service refuses to start when `MEMBERSHIP_URL` is set and `MEMBERSHIP_AUDIENCE` or `SERVICE_CLIENT_SECRET` is
   empty. With `MEMBERSHIP_URL` unset nothing changes.

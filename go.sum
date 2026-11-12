@@ -38,8 +38,8 @@ github.com/gabriel-vasile/mimetype v1.4.16 h1:5izNFuvA37st1dDRAcA7TtmngBmRgiIPDm
 github.com/gabriel-vasile/mimetype v1.4.16/go.mod h1:3oFFwxX8kTklZwzIl2aQEDZT0lKY8xH92ST88bAwba4=
 github.com/gmb-lib/go-asice v1.6.4 h1:L3hFL7WGUCNigtqUMxFIhvTZYPlqCeKYue/qUiVFUxo=
 github.com/gmb-lib/go-asice v1.6.4/go.mod h1:8di8TG47Yz+ku/7DOM99SgwToSTaDm+rCJ+Am5wZ9ZU=
-github.com/gmb-lib/go-authbyte v0.42.0 h1:yNhzHZsUcymuMZOr6gszEW98GEPI4MfGS0ANNuoy5R8=
-github.com/gmb-lib/go-authbyte v0.42.0/go.mod h1:epTyV6Jdn01/3kGafW0lDkIl04vrs2IJsbgGIR7hxBk=
+github.com/gmb-lib/go-authbyte v0.43.0 h1:nTwoyAKHu6FGzRep0MTa0OsBuLFuWlbOogUH7ALpjFA=
+github.com/gmb-lib/go-authbyte v0.43.0/go.mod h1:epTyV6Jdn01/3kGafW0lDkIl04vrs2IJsbgGIR7hxBk=
 github.com/gmb-lib/go-docgate v1.0.6 h1:PY42yvCjSBvqP4yOWzNMmbtwsQZdA2Mk+W9YN5I/u+k=
 github.com/gmb-lib/go-docgate v1.0.6/go.mod h1:wvz+qTUsaLLOxSc23I8MzmgyJdB8SmMiea1yWTbS3u8=
 github.com/gmb-lib/go-gdpr-audit v1.1.8 h1:l/ieRtPo/gj9Qhj++lxZjUK+D95hJRJUFDIpYiFjSi8=
