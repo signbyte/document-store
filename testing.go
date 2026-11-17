@@ -7,6 +7,8 @@ import (
 	"azugo.io/azugo/token"
 	"azugo.io/azugo/user"
 	"github.com/go-quicktest/qt"
+
+	"github.com/signbyte/document-store/audit"
 )
 
 // TestApp builds an App for tests: in-memory metadata + blob stores, an ephemeral
@@ -32,6 +34,10 @@ func TestApp(tb testing.TB) *App {
 
 	return app
 }
+
+// SetAuditForTest replaces the audit recorder, so a test can observe the events
+// the request path records.
+func (a *App) SetAuditForTest(rec *audit.Recorder) { a.audit = rec }
 
 // TestAuthMiddleware authenticates requests from the X-Test-Scopes header
 // (comma-separated scopes, e.g. "documents:read,documents:write") and uses the

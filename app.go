@@ -15,6 +15,7 @@ package documentstore
 
 import (
 	"fmt"
+	"strings"
 
 	"azugo.io/azugo"
 	"azugo.io/azugo/server"
@@ -22,6 +23,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/gmb-lib/go-authbyte/authclient"
+	"github.com/gmb-lib/go-authbyte/declare"
+	"github.com/gmb-lib/go-authbyte/permissions"
 	"github.com/gmb-lib/go-gdpr-audit/gdpr"
 	"github.com/gmb-lib/go-platform-kit/broker"
 	"github.com/gmb-lib/go-platform-kit/broker/natsbroker"
@@ -50,9 +53,14 @@ type App struct {
 	authClient *authclient.Client
 	authMW     azugo.RequestHandlerFunc
 
-	// Outbound (set only when GDPR-audit / access-audit is configured).
+	// Outbound (set only when GDPR-audit / access-audit or a membership register
+	// is configured).
 	outboundClient *authclient.Client
 	gdprAudit      *gdpr.Client
+
+	// declaration is the task that declares the service to the membership register;
+	// nil unless MEMBERSHIP_URL is set.
+	declaration *declare.Task
 
 	audit *audit.Recorder
 }
@@ -143,9 +151,10 @@ func (a *App) init() error {
 	a.authMW = a.authClient.Authenticate()
 
 	// Outbound DPoP service client — serves the access-audit Poster (aud
-	// svc:access-audit). document-store does NOT call eparaksts-signer: the
-	// user-facing DSS validate/archive is the Signing Orchestrator's call
-	//.
+	// svc:access-audit) and the declaration to the membership register. One client
+	// serves both; it exists only when either is configured. document-store does
+	// NOT call eparaksts-signer: the user-facing DSS validate/archive is the
+	// Signing Orchestrator's call.
 	if cfg.OutboundEnabled() {
 		a.outboundClient, err = authclient.New(cfg.OutboundAuthClientConfig())
 		if err != nil {
@@ -220,6 +229,39 @@ func (a *App) init() error {
 		HistoryKeep: cfg.HistoryRetention,
 		Logger:      a.Log(),
 	}))
+}
+
+// DeclareTo adds the task that declares sets to the membership register at start,
+// as the service itself. With MEMBERSHIP_URL unset it does nothing at all. The
+// task sends in the background and never delays or stops the start: a register
+// that is away or refuses is logged and tried again. It is called where the sets
+// are known (the routes package, which checks the levels the sets declare).
+func (a *App) DeclareTo(sets ...*permissions.Set) error {
+	cfg := a.config
+	if !cfg.MembershipEnabled() {
+		return nil
+	}
+
+	log := a.Log().Named("declaration")
+	keys := strings.Join(permissions.ServiceKeys(sets...), ", ")
+
+	task, err := declare.New(a.outboundClient, cfg.MembershipURL, cfg.MembershipAudience, declare.Config{
+		OnError: func(err error) {
+			log.Error("declaring the service to the membership register failed", zap.Error(err))
+		},
+		OnDeclared: func([]byte) {
+			log.Info("the membership register accepted the declaration", zap.String("service", keys))
+		},
+	}, sets...)
+	if err != nil {
+		return fmt.Errorf("document-store: declaration: %w", err)
+	}
+	if err := a.AddTask(task); err != nil {
+		return fmt.Errorf("document-store: declaration task: %w", err)
+	}
+	a.declaration = task
+
+	return nil
 }
 
 // Start verifies backend connectivity (non-fatal) then starts the server + tasks.

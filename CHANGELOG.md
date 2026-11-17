@@ -3,6 +3,37 @@
 Notable changes to this service, newest first, per release. This file is written for whoever
 runs the service or integrates against it.
 
+## v0.2.0
+
+### Added
+
+- **The service can declare its levels to a membership register.** A deployment that runs one sets
+  `MEMBERSHIP_URL` (the register's root address) and `MEMBERSHIP_AUDIENCE` (the audience its tokens are asked for);
+  at start the service then sends the register its service key `document-store`, its display name and its four levels
+  (`documents:read`, `write`, `grant` and `durable`), as itself, so the levels no longer have to be written into the
+  register by hand. The service runs on go-authbyte v0.43.0, which asks the declaration's token for one more scope
+  per level group not named like the service key. Before running this release against a membership register, the
+  deployment's registry must grant the service's client the scopes `declare:document-store` and
+  `declare-group:documents` toward the register's audience; without the second, the token request is refused and
+  nothing is declared. The declaration is sent in the background and never delays or stops the start; a
+  refusal is logged as an error and tried again a minute later, and an accepted declaration is sent again every hour.
+  The service refuses to start when `MEMBERSHIP_URL` is set and `MEMBERSHIP_AUDIENCE` or `SERVICE_CLIENT_SECRET` is
+  empty. With `MEMBERSHIP_URL` unset nothing changes.
+- **`AUDIT_ISSUER_URL` serves both outbound uses.** It is the address the service asks its own tokens at, for the
+  access audit and for the membership register alike; unset, it is the issuer address as before. One outbound client
+  serves both uses and exists only when either is configured.
+
+### Changed
+
+- **Libraries updated:** go-authbyte v0.42.0. Which scope level a route requires does not change.
+- **Built with Go 1.27.4.** Runs on azugo v0.50.2 and the newest releases of its libraries.
+- **Request bodies are held to the framework's limit.** A body over the limit answers 413 as `application/problem+json`;
+  the default limit is 4 MiB. The upload routes ingest, complete, add-signature, signed and archived take a body up to
+  `MAX_FILE_BYTES` (25 MiB unless set) plus 64 KiB for the multipart framing. The assemble route, which takes several
+  files at once, holds the whole body to the new setting `MAX_ASSEMBLE_BYTES` (32 MiB unless set; it may not be smaller
+  than `MAX_FILE_BYTES`, or the service refuses to start). No separate server body-size setting is needed for uploads.
+  A malformed multipart body answers 400.
+
 ## v0.1.5
 
 ### Security

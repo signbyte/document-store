@@ -73,7 +73,9 @@ func Init(a *documentstore.App) error {
 	v1.Get("/history", r.listHistory)
 	v1.Delete("/history/{chainRoot}", r.deleteHistory)
 
-	return nil
+	// Tell the membership register, when one is configured, which levels the
+	// routes above check. Nothing happens without MEMBERSHIP_URL.
+	return a.DeclareTo(Declared()...)
 }
 
 // requireScope enforces a documents:<level> scope; on denial it emits the
@@ -85,13 +87,13 @@ func Init(a *documentstore.App) error {
 //	  every uploader holds `write`, and a compromised token that also held this
 //	  one by default could create storage nothing ever cleans up.
 func (r *router) requireScope(ctx *azugo.Context, level string) bool {
-	if ctx.User().HasScopeLevel("documents", level) {
+	if ctx.User().HasScopeLevel(ScopeGroup, level) {
 		return true
 	}
 
-	r.Audit().Denied(ctx, callerID(ctx), "documents:"+level)
+	r.Audit().Denied(ctx, callerID(ctx), ScopeGroup+":"+level)
 	ctx.Error(pkerrors.NewProblem("err:document:forbidden",
-		pkerrors.WithDetail("missing documents:"+level+" scope")))
+		pkerrors.WithDetail("missing "+ScopeGroup+":"+level+" scope")))
 
 	return false
 }

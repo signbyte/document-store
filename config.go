@@ -2,6 +2,7 @@ package documentstore
 
 import (
 	"encoding/base64"
+	"errors"
 	"strings"
 	"time"
 
@@ -50,6 +51,11 @@ type Configuration struct {
 	// signing path's body limit.
 	MaxFileBytes int64 `mapstructure:"max_file_bytes" validate:"required,gt=0"`
 
+	// MaxAssembleBytes caps the whole request body (framing included) of the
+	// assemble route, which takes several files at once. Required, > 0, and not
+	// smaller than MaxFileBytes.
+	MaxAssembleBytes int64 `mapstructure:"max_assemble_bytes" validate:"required,gt=0"`
+
 	// --- Encrypted byte store: S3-API object storage (e.g. RustFS, Scality) ---
 	// Coded to the S3 API via minio-go (the platform object-storage standard, not a
 	// vendor SDK). When S3Endpoint + S3Bucket are set the S3 backend is used;
@@ -80,8 +86,9 @@ type Configuration struct {
 
 	// --- Outbound service-client identity ---
 	// SERVICE_CLIENT_ID/SECRET authenticate this service's outbound DPoP service
-	// tokens (the access-audit Poster, aud svc:access-audit). AuditIssuerURL points
-	// the token mint at the in-network auth address (the `iss` stays Auth.IssuerURL).
+	// tokens (the access-audit Poster, aud svc:access-audit, and the declaration to
+	// the membership register). AuditIssuerURL points the token mint at the
+	// in-network auth address (the `iss` stays Auth.IssuerURL), for either use.
 	ServiceClientID     string `mapstructure:"service_client_id"`
 	ServiceClientSecret string `mapstructure:"service_client_secret"`
 	AuditIssuerURL      string `mapstructure:"audit_issuer_url" validate:"omitempty,url"`
@@ -91,6 +98,14 @@ type Configuration struct {
 	AccessAuditAudience  string `mapstructure:"access_audit_audience"`
 	AccessAuditScope     string `mapstructure:"access_audit_scope"`
 	AccessAuditOutboxDir string `mapstructure:"access_audit_outbox_dir"`
+
+	// --- Membership register (optional) ---
+	// MembershipURL is the root address of a membership register. When set, the
+	// service declares its service key and its levels there at start, as itself;
+	// when empty nothing about the service changes. MembershipAudience is the
+	// audience the tokens for that call are asked for; it is required with the URL.
+	MembershipURL      string `mapstructure:"membership_url" validate:"omitempty,url"`
+	MembershipAudience string `mapstructure:"membership_audience"`
 
 	// --- Optional malware scan on user-facing uploads (deployment seam) ---
 	// ClamAVEndpoint is a clamd host:port. When set, every user-facing upload
@@ -162,7 +177,8 @@ func (c *Configuration) Bind(_ string, v *viper.Viper) {
 	c.Auth = azugocfg.Bind(c.Auth, "auth", v)
 
 	// Upload + retention defaults.
-	v.SetDefault("max_file_bytes", 25*1024*1024) // 25 MiB
+	v.SetDefault("max_file_bytes", 25*1024*1024)     // 25 MiB
+	v.SetDefault("max_assemble_bytes", 32*1024*1024) // 32 MiB
 	v.SetDefault("document_retention_ttl", 24*time.Hour)
 	v.SetDefault("document_retention_sweep_interval", 15*time.Minute)
 	v.SetDefault("document_retention_sweep_batch", 500)
@@ -177,6 +193,7 @@ func (c *Configuration) Bind(_ string, v *viper.Viper) {
 	loadSecret(v, "document_store_dsn", "DOCUMENT_STORE_DSN")
 	_ = v.BindEnv("document_store_dsn", "DOCUMENT_STORE_DSN")
 	_ = v.BindEnv("max_file_bytes", "MAX_FILE_BYTES")
+	_ = v.BindEnv("max_assemble_bytes", "MAX_ASSEMBLE_BYTES")
 	_ = v.BindEnv("document_retention_ttl", "DOCUMENT_RETENTION_TTL")
 	_ = v.BindEnv("document_retention_sweep_interval", "DOCUMENT_RETENTION_SWEEP_INTERVAL")
 	_ = v.BindEnv("document_retention_sweep_batch", "DOCUMENT_RETENTION_SWEEP_BATCH")
@@ -211,6 +228,10 @@ func (c *Configuration) Bind(_ string, v *viper.Viper) {
 	_ = v.BindEnv("access_audit_scope", "ACCESS_AUDIT_SCOPE")
 	_ = v.BindEnv("access_audit_outbox_dir", "ACCESS_AUDIT_OUTBOX_DIR")
 
+	// Membership register — off until MEMBERSHIP_URL is set.
+	_ = v.BindEnv("membership_url", "MEMBERSHIP_URL")
+	_ = v.BindEnv("membership_audience", "MEMBERSHIP_AUDIENCE")
+
 	// Optional malware scan — off until CLAMAV_ENDPOINT is set.
 	_ = v.BindEnv("clamav_endpoint", "CLAMAV_ENDPOINT")
 
@@ -232,7 +253,31 @@ func (c *Configuration) Validate(valid *validation.Validate) error {
 		return err
 	}
 
-	return valid.Struct(c)
+	if err := valid.Struct(c); err != nil {
+		return err
+	}
+
+	if c.MaxAssembleBytes < c.MaxFileBytes {
+		return errors.New("MAX_ASSEMBLE_BYTES is smaller than MAX_FILE_BYTES: raise MAX_ASSEMBLE_BYTES to at least MAX_FILE_BYTES")
+	}
+
+	return c.validateMembership()
+}
+
+// validateMembership refuses a membership register that could not be declared to:
+// each refusal names the setting to change.
+func (c *Configuration) validateMembership() error {
+	if !c.MembershipEnabled() {
+		return nil
+	}
+	if strings.TrimSpace(c.MembershipAudience) == "" {
+		return errors.New("MEMBERSHIP_URL is set but MEMBERSHIP_AUDIENCE is empty: set MEMBERSHIP_AUDIENCE to the audience the membership register's tokens are asked for, or unset MEMBERSHIP_URL")
+	}
+	if strings.TrimSpace(c.ServiceClientSecret) == "" {
+		return errors.New("MEMBERSHIP_URL is set but SERVICE_CLIENT_SECRET is empty: the declaration is sent as this service, so set SERVICE_CLIENT_SECRET (or SERVICE_CLIENT_SECRET_FILE), or unset MEMBERSHIP_URL")
+	}
+
+	return nil
 }
 
 // StoreBackend derives the metadata backend from configuration.
@@ -258,10 +303,17 @@ func (c *Configuration) AccessAuditEnabled() bool {
 	return strings.TrimSpace(c.AccessAuditURL) != ""
 }
 
-// OutboundEnabled reports whether an outbound DPoP service call is configured
-// (the access-audit Poster). document-store has no other outbound service call.
+// MembershipEnabled reports whether the service declares itself to a membership
+// register.
+func (c *Configuration) MembershipEnabled() bool {
+	return strings.TrimSpace(c.MembershipURL) != ""
+}
+
+// OutboundEnabled reports whether an outbound DPoP service call is configured:
+// the access-audit Poster or the declaration to a membership register. One
+// outbound client serves both. document-store has no other outbound service call.
 func (c *Configuration) OutboundEnabled() bool {
-	return c.AccessAuditEnabled()
+	return c.AccessAuditEnabled() || c.MembershipEnabled()
 }
 
 // auditIssuer returns the issuer base for the outbound service-token mint.
@@ -276,7 +328,7 @@ func (c *Configuration) auditIssuer() string {
 // OutboundAuthClientConfig builds the OUTBOUND auth-client config: it reuses the
 // inbound Auth settings and adds this service's client-credentials + the
 // (optional) issuer override. The outbound client serves the access-audit Poster
-// (aud svc:access-audit).
+// (aud svc:access-audit) and the declaration to the membership register.
 func (c *Configuration) OutboundAuthClientConfig() *authclient.Configuration {
 	cfg := *c.Auth // copy the validated inbound config
 	cfg.IssuerURL = c.auditIssuer()
