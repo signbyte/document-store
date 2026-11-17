@@ -51,6 +51,11 @@ type Configuration struct {
 	// signing path's body limit.
 	MaxFileBytes int64 `mapstructure:"max_file_bytes" validate:"required,gt=0"`
 
+	// MaxAssembleBytes caps the whole request body (framing included) of the
+	// assemble route, which takes several files at once. Required, > 0, and not
+	// smaller than MaxFileBytes.
+	MaxAssembleBytes int64 `mapstructure:"max_assemble_bytes" validate:"required,gt=0"`
+
 	// --- Encrypted byte store: S3-API object storage (e.g. RustFS, Scality) ---
 	// Coded to the S3 API via minio-go (the platform object-storage standard, not a
 	// vendor SDK). When S3Endpoint + S3Bucket are set the S3 backend is used;
@@ -172,7 +177,8 @@ func (c *Configuration) Bind(_ string, v *viper.Viper) {
 	c.Auth = azugocfg.Bind(c.Auth, "auth", v)
 
 	// Upload + retention defaults.
-	v.SetDefault("max_file_bytes", 25*1024*1024) // 25 MiB
+	v.SetDefault("max_file_bytes", 25*1024*1024)     // 25 MiB
+	v.SetDefault("max_assemble_bytes", 32*1024*1024) // 32 MiB
 	v.SetDefault("document_retention_ttl", 24*time.Hour)
 	v.SetDefault("document_retention_sweep_interval", 15*time.Minute)
 	v.SetDefault("document_retention_sweep_batch", 500)
@@ -187,6 +193,7 @@ func (c *Configuration) Bind(_ string, v *viper.Viper) {
 	loadSecret(v, "document_store_dsn", "DOCUMENT_STORE_DSN")
 	_ = v.BindEnv("document_store_dsn", "DOCUMENT_STORE_DSN")
 	_ = v.BindEnv("max_file_bytes", "MAX_FILE_BYTES")
+	_ = v.BindEnv("max_assemble_bytes", "MAX_ASSEMBLE_BYTES")
 	_ = v.BindEnv("document_retention_ttl", "DOCUMENT_RETENTION_TTL")
 	_ = v.BindEnv("document_retention_sweep_interval", "DOCUMENT_RETENTION_SWEEP_INTERVAL")
 	_ = v.BindEnv("document_retention_sweep_batch", "DOCUMENT_RETENTION_SWEEP_BATCH")
@@ -248,6 +255,10 @@ func (c *Configuration) Validate(valid *validation.Validate) error {
 
 	if err := valid.Struct(c); err != nil {
 		return err
+	}
+
+	if c.MaxAssembleBytes < c.MaxFileBytes {
+		return errors.New("MAX_ASSEMBLE_BYTES is smaller than MAX_FILE_BYTES: raise MAX_ASSEMBLE_BYTES to at least MAX_FILE_BYTES")
 	}
 
 	return c.validateMembership()

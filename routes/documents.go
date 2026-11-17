@@ -49,13 +49,19 @@ func (r *router) ingest(ctx *azugo.Context) {
 		return
 	}
 	caller := callerID(ctx)
+	r.limitUpload(ctx)
 
 	fh, data, ok := r.readRequiredFile(ctx, "file")
 	if !ok {
 		return
 	}
 
-	presv := formField(ctx, "preservation_class")
+	presv, err := r.formField(ctx, "preservation_class")
+	if err != nil {
+		ctx.Error(err)
+
+		return
+	}
 	if !request.ValidPreservationClass(presv) {
 		ctx.Error(pkerrors.NewProblem("err:document:invalidPreservationClass",
 			pkerrors.WithStatus(fasthttp.StatusBadRequest),
@@ -64,7 +70,12 @@ func (r *router) ingest(ctx *azugo.Context) {
 		return
 	}
 
-	rclass := formField(ctx, "retention_class")
+	rclass, err := r.formField(ctx, "retention_class")
+	if err != nil {
+		ctx.Error(err)
+
+		return
+	}
 	if !request.ValidRetentionClass(rclass) {
 		ctx.Error(pkerrors.NewProblem("err:document:invalidRetentionClass",
 			pkerrors.WithStatus(fasthttp.StatusBadRequest),
@@ -81,7 +92,12 @@ func (r *router) ingest(ctx *azugo.Context) {
 		return
 	}
 
-	mime := formField(ctx, "mime")
+	mime, err := r.formField(ctx, "mime")
+	if err != nil {
+		ctx.Error(err)
+
+		return
+	}
 	if mime == "" {
 		mime = fh.Header.Get("Content-Type")
 	}
@@ -179,7 +195,13 @@ func (r *router) resolveRetention(ctx *azugo.Context, rclass string) (ownerKind,
 		// The date is this service's to set under the default class, so a caller
 		// offering one is refused rather than quietly ignored — dropping it in
 		// silence would leave the caller believing a retention policy was applied.
-		if formField(ctx, "retention_until") != "" {
+		pending, err := r.formField(ctx, "retention_until")
+		if err != nil {
+			ctx.Error(err)
+
+			return "", "", "", nil, false
+		}
+		if pending != "" {
 			ctx.Error(pkerrors.NewProblem("err:document:invalidRetentionUntil",
 				pkerrors.WithStatus(fasthttp.StatusBadRequest),
 				pkerrors.WithDetail("retention_until may only be set with retention_class=durable")))
@@ -205,7 +227,13 @@ func (r *router) resolveRetention(ctx *azugo.Context, rclass string) (ownerKind,
 		return "", "", "", nil, false
 	}
 
-	if v := formField(ctx, "retention_until"); v != "" {
+	v, err := r.formField(ctx, "retention_until")
+	if err != nil {
+		ctx.Error(err)
+
+		return "", "", "", nil, false
+	}
+	if v != "" {
 		t, err := time.Parse(time.RFC3339, v)
 		if err != nil {
 			ctx.Error(pkerrors.NewProblem("err:document:invalidRetentionUntil",
@@ -616,6 +644,8 @@ func (r *router) complete(ctx *azugo.Context) {
 	}
 	caller := callerID(ctx)
 	id := ctx.Params.String("id")
+
+	r.limitUpload(ctx)
 
 	_, fileless, ok := r.readRequiredFile(ctx, "container")
 	if !ok {
@@ -1078,6 +1108,10 @@ func (r *router) assemble(ctx *azugo.Context) {
 	}
 	caller := callerID(ctx)
 
+	// Several files arrive in one body: the whole body, framing included, is held
+	// to MAX_ASSEMBLE_BYTES (each file still to MAX_FILE_BYTES).
+	ctx.SetMaxBodySize(int(r.Config().MaxAssembleBytes))
+
 	docs, ok := r.readFiles(ctx, "documents")
 	if !ok {
 		return
@@ -1120,6 +1154,8 @@ func (r *router) addSignature(ctx *azugo.Context) {
 	}
 	caller := callerID(ctx)
 	id := ctx.Params.String("id")
+
+	r.limitUpload(ctx)
 
 	_, sig, ok := r.readRequiredFile(ctx, "signature")
 	if !ok {
@@ -1197,6 +1233,8 @@ func (r *router) storeSigned(ctx *azugo.Context) {
 	caller := callerID(ctx)
 	id := ctx.Params.String("id")
 
+	r.limitUpload(ctx)
+
 	fh, data, ok := r.readRequiredFile(ctx, "signed")
 	if !ok {
 		return
@@ -1206,7 +1244,12 @@ func (r *router) storeSigned(ctx *azugo.Context) {
 		return
 	}
 
-	mime := formField(ctx, "mime")
+	mime, err := r.formField(ctx, "mime")
+	if err != nil {
+		ctx.Error(err)
+
+		return
+	}
 	if mime == "" {
 		mime = fh.Header.Get("Content-Type")
 	}
@@ -1404,6 +1447,8 @@ func (r *router) storeArchived(ctx *azugo.Context) {
 	}
 	id := ctx.Params.String("id")
 
+	r.limitUpload(ctx)
+
 	_, data, ok := r.readRequiredFile(ctx, "archived")
 	if !ok {
 		return
@@ -1552,7 +1597,13 @@ func (r *router) storeContainer(ctx *azugo.Context, caller, parentID, presv, fil
 
 // readRequiredFile reads a single required uploaded file, enforcing MAX_FILE_BYTES.
 func (r *router) readRequiredFile(ctx *azugo.Context, field string) (*multipart.FileHeader, []byte, bool) {
-	fh := ctx.Form.FileOptional(field)
+	fh, err := ctx.Form.FileOptional(field)
+	if err != nil {
+		r.recordCapIfTooLarge(ctx, err)
+		ctx.Error(err)
+
+		return nil, nil, false
+	}
 	if fh == nil {
 		ctx.Error(pkerrors.NewProblem("err:document:missingFile",
 			pkerrors.WithStatus(fasthttp.StatusBadRequest),
@@ -1584,7 +1635,13 @@ func (r *router) readRequiredFile(ctx *azugo.Context, field string) (*multipart.
 // readFiles reads all uploaded files for a field as packaging.File values,
 // enforcing the per-file size cap.
 func (r *router) readFiles(ctx *azugo.Context, field string) ([]packaging.File, bool) {
-	headers := ctx.Form.Files(field)
+	headers, err := ctx.Form.Files(field)
+	if err != nil {
+		r.recordCapIfTooLarge(ctx, err)
+		ctx.Error(err)
+
+		return nil, false
+	}
 	files := make([]packaging.File, 0, len(headers))
 	for _, fh := range headers {
 		if fh.Size > r.Config().MaxFileBytes {
@@ -1611,12 +1668,41 @@ func (r *router) readFiles(ctx *azugo.Context, field string) ([]packaging.File, 
 }
 
 // formField reads an optional multipart/form string field, trimmed ("" when absent).
-func formField(ctx *azugo.Context, name string) string {
-	if v := ctx.Form.StringOptional(name); v != nil {
-		return strings.TrimSpace(*v)
+// The error is the form read's own (413 over the body limit, 400 malformed).
+func (r *router) formField(ctx *azugo.Context, name string) (string, error) {
+	v, err := ctx.Form.StringOptional(name)
+	if err != nil {
+		r.recordCapIfTooLarge(ctx, err)
+
+		return "", err
+	}
+	if v != nil {
+		return strings.TrimSpace(*v), nil
 	}
 
-	return ""
+	return "", nil
+}
+
+// recordCapIfTooLarge records the cap-exceeded security event when a form read
+// failed because the body went over the route's limit, as the per-file size check
+// does. The caller still answers the error as before. The file name and size are
+// not known here: the body was refused before it was parsed.
+func (r *router) recordCapIfTooLarge(ctx *azugo.Context, err error) {
+	if errors.Is(err, azugo.RequestEntityTooLargeError{}) {
+		r.Audit().CapExceeded(ctx, callerID(ctx))
+	}
+}
+
+// multipartOverhead is the room a multipart/form-data body needs beyond the file
+// itself: boundaries, part headers and the small text fields. An upload route
+// limits its body to MaxFileBytes plus this.
+const multipartOverhead = 64 * 1024
+
+// limitUpload raises the body limit of an upload route above the framework's
+// default to the configured file cap plus the multipart framing. It must run
+// before the route's first form read.
+func (r *router) limitUpload(ctx *azugo.Context) {
+	ctx.SetMaxBodySize(int(r.Config().MaxFileBytes) + multipartOverhead)
 }
 
 // readMultipartFile reads an uploaded file fully into memory.

@@ -248,6 +248,7 @@ Standard fleet env (`SERVER_URLS`, `SERVICE_NAME`, `ENVIRONMENT`, `LOG_*`, `METR
 | `SERVICE_AUDIENCE` | — | Expected token audience (`svc:document`) |
 | `DOCUMENT_STORE_DSN` | — | PostgreSQL DSN for the `EXECUTE`-only role. Unset ⇒ in-memory metadata store (development only). Supports the `_FILE` secret convention. Pool size comes from the DSN itself — `pool_max_conns` (pgx reads it and strips it before Postgres sees it; its default is the host's CPU count): set it explicitly to the deployment's connection budget, e.g. `?sslmode=…&pool_max_conns=4&pool_min_conns=1`. |
 | `MAX_FILE_BYTES` | `26214400` (25 MiB) | Per-file upload cap (checked before read) |
+| `MAX_ASSEMBLE_BYTES` | `33554432` (32 MiB) | Whole-body cap of the assemble route (several files in one request, framing included); not smaller than `MAX_FILE_BYTES` |
 | `DOCUMENT_RETENTION_TTL` | `24h` | Retention window applied at ingest under the default `ttl` class |
 | `DOCUMENT_PRODUCT_CLIENTS` | — | Which service clients may own documents, as `client=product` pairs (`svc:example-documents=example`, comma-separated). The **product** is recorded as the owner, not the client id, so rotating or renaming that credential leaves every document it stored still owned and still releasable. A client that is not listed cannot store a product-owned document, whatever scopes it holds. Unset ⇒ the durable class is unreachable |
 | `DOCUMENT_RETENTION_SWEEP_INTERVAL` | `15m` | Retention sweep cadence |

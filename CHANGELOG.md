@@ -26,7 +26,13 @@ runs the service or integrates against it.
 ### Changed
 
 - **Libraries updated:** go-authbyte v0.42.0. Which scope level a route requires does not change.
-- **Built with Go 1.27.4.**
+- **Built with Go 1.27.4.** Runs on azugo v0.50.2 and the newest releases of its libraries.
+- **Request bodies are held to the framework's limit.** A body over the limit answers 413 as `application/problem+json`;
+  the default limit is 4 MiB. The upload routes ingest, complete, add-signature, signed and archived take a body up to
+  `MAX_FILE_BYTES` (25 MiB unless set) plus 64 KiB for the multipart framing. The assemble route, which takes several
+  files at once, holds the whole body to the new setting `MAX_ASSEMBLE_BYTES` (32 MiB unless set; it may not be smaller
+  than `MAX_FILE_BYTES`, or the service refuses to start). No separate server body-size setting is needed for uploads.
+  A malformed multipart body answers 400.
 
 ## v0.1.5
 
